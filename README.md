@@ -1,39 +1,47 @@
-# GymBuddie
+# GymBuddie 🏋️
 
-This template should help get you started developing with Vue 3 in Vite.
+GymBuddie ist eine einfache und schnelle Progressive Web App (PWA), um deine Trainingsfortschritte im Fitnessstudio zu verfolgen. Die App ist für die mobile Nutzung optimiert und funktioniert auch offline.
 
-## Recommended IDE Setup
+## Features
 
-[VSCode](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- **Kategorien erstellen:** Organisiere dein Training in Kategorien (z.B. Push, Pull, Beine).
+- **Übungen hinzufügen:** Lege spezifische Übungen innerhalb jeder Kategorie an.
+- **Fortschritt tracken:** Logge dein Trainingsgewicht, Wiederholungen und Sätze für jede Übung.
+- **Historie einsehen:** Verfolge deine Verbesserungen über eine chronologische Liste deiner letzten Einträge.
+- **Video-Links:** Füge zu jeder Übung einen Link zu einem Technik-Video hinzu.
+- **Offline-fähig:** Als PWA konzipiert, werden alle Daten lokal auf dem Gerät gespeichert und die App funktioniert auch ohne Internetverbindung.
 
-## Type Support for `.vue` Imports in TS
+## Tech Stack
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+- **Framework:** [Vue.js](https://vuejs.org/) 3 (Composition API)
+- **Sprache:** [TypeScript](https://www.typescriptlang.org/)
+- **State Management:** [Pinia](https://pinia.vuejs.org/)
+- **Styling:** [Tailwind CSS](https://tailwindcss.com/)
+- **Build-Tool:** [Vite](https://vitejs.dev/)
+- **Deployment:** [GitHub Pages](https://pages.github.com/)
 
-## Customize configuration
+## Setup & Entwicklung
 
-See [Vite Configuration Reference](https://vite.dev/config/).
+1.  **Abhängigkeiten installieren:**
+    ```bash
+    npm install
+    ```
 
-## Project Setup
+2.  **Entwicklungsserver starten:**
+    ```bash
+    npm run dev
+    ```
+    Die App ist danach unter `http://localhost:5173` (oder einem ähnlichen Port) erreichbar.
 
-```sh
-npm install
-```
+3.  **Produktions-Build erstellen:**
+    ```bash
+    npm run build
+    ```
+    Erstellt eine optimierte Version der App im `dist`-Ordner.
 
-### Compile and Hot-Reload for Development
+## Deployment
 
-```sh
-npm run dev
-```
+Dieses Projekt wird über GitHub Pages veröffentlicht. Der folgende Befehl erstellt einen neuen Build und pusht ihn auf den `gh-pages` Branch des Repositories.
 
-### Type-Check, Compile and Minify for Production
-
-```sh
-npm run build
-```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-npm run lint
-```
+```bash
+npm run deploy
