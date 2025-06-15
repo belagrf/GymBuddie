@@ -16,23 +16,30 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      // manifest.json Konfiguration (Metadaten deiner App)
       manifest: {
-        name: 'App für meinen Freund', // Der volle Name der App
-        short_name: 'FreundsApp', // Kürzerer Name für den Homescreen
-        description: 'Eine coole App, die ich für dich gemacht habe',
-        theme_color: '#ffffff', // Die Farbe der Browser-Leiste
-        // Hier definierst du die App-Icons
+        name: 'GymBuddie',
+        short_name: 'GymBuddie',
+        description: 'Dein persönlicher Fortschritts-Tracker für das Fitnessstudio.',
+        theme_color: '#f9fafb', // Helles Grau für die Browser-Leiste
+        background_color: '#f9fafb',
+        display: 'standalone',
+        start_url: '.',
         icons: [
           {
-            src: 'pwa-192x192.png',
+            src: 'pwa-192x192.png', // Muss im 'public' Ordner liegen
             sizes: '192x192',
+            type: 'image/png',
+          },
+          {
+            src: 'pwa-512x512.png', // Muss im 'public' Ordner liegen
+            sizes: '512x512',
             type: 'image/png',
           },
           {
             src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png',
+            purpose: 'any maskable',
           },
         ],
       },
