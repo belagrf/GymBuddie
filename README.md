@@ -1,3 +1,5 @@
+**⚠️Dieses Projekt wurde aus Zeitgründen mit KI erstellt⚠️**  
+
 # GymBuddie 🏋️
 
 GymBuddie ist eine einfache und schnelle Progressive Web App (PWA), um deine Trainingsfortschritte im Fitnessstudio zu verfolgen. Die App ist für die mobile Nutzung optimiert und funktioniert auch offline.
