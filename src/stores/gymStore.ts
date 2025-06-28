@@ -1,19 +1,25 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
-// Datenstrukturen bleiben gleich
-export interface ProgressEntry {
-  date: string
+// Definiert einen einzelnen Satz
+export interface SetEntry {
+  id: string
   weight: number
   reps: number
-  sets: number
 }
 
+// Definiert eine Trainingseinheit für einen Tag, die mehrere Sätze enthält
+export interface WorkoutSession {
+  date: string
+  sets: SetEntry[]
+}
+
+// Exercise enthält jetzt eine Historie von WorkoutSessions
 export interface Exercise {
   id: string
   name: string
   videoUrl?: string
-  history: ProgressEntry[]
+  history: WorkoutSession[]
 }
 
 export interface Category {
@@ -23,15 +29,36 @@ export interface Category {
 }
 
 export const useGymStore = defineStore('gym', () => {
-  // === STATE ===
   const categories = ref<Category[]>(JSON.parse(localStorage.getItem('gymData') || '[]'))
 
-  // === ACTIONS ===
+  // --- ACTIONS ---
+
+  function logSet(exerciseId: string, newSet: Omit<SetEntry, 'id'>) {
+    for (const category of categories.value) {
+      const exercise = category.exercises.find((e) => e.id === exerciseId)
+      if (exercise) {
+        const today = new Date().toISOString().split('T')[0]
+
+        const todaySession = exercise.history.find((session) => session.date === today)
+
+        const setToAdd: SetEntry = { ...newSet, id: Date.now().toString() }
+
+        if (todaySession) {
+          todaySession.sets.unshift(setToAdd)
+        } else {
+          exercise.history.unshift({
+            date: today,
+            sets: [setToAdd],
+          })
+        }
+        break
+      }
+    }
+  }
 
   function addCategory(name: string) {
     if (!name.trim()) return
     categories.value.unshift({
-      // unshift statt push, damit neue Einträge oben erscheinen
       id: Date.now().toString(),
       name: name.trim(),
       exercises: [],
@@ -45,9 +72,7 @@ export const useGymStore = defineStore('gym', () => {
   function addExercise(categoryId: string, exerciseName: string, videoUrl?: string) {
     const category = categories.value.find((c) => c.id === categoryId)
     if (!category || !exerciseName.trim()) return
-
     category.exercises.unshift({
-      // unshift statt push
       id: Date.now().toString(),
       name: exerciseName.trim(),
       videoUrl: videoUrl?.trim(),
@@ -62,21 +87,7 @@ export const useGymStore = defineStore('gym', () => {
     }
   }
 
-  function logProgress(exerciseId: string, progress: Omit<ProgressEntry, 'date'>) {
-    for (const category of categories.value) {
-      const exercise = category.exercises.find((e) => e.id === exerciseId)
-      if (exercise) {
-        exercise.history.unshift({
-          // unshift statt push
-          ...progress,
-          date: new Date().toISOString().split('T')[0],
-        })
-        break
-      }
-    }
-  }
-
-  // === PERSISTENCE ===
+  // --- PERSISTENCE ---
   watch(
     categories,
     (newData) => {
@@ -85,13 +96,12 @@ export const useGymStore = defineStore('gym', () => {
     { deep: true },
   )
 
-  // Gib alles zurück, was die Komponenten brauchen
   return {
     categories,
     addCategory,
     deleteCategory,
     addExercise,
     deleteExercise,
-    logProgress,
+    logSet,
   }
 })
