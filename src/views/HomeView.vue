@@ -1,212 +1,260 @@
 <script setup lang="ts">
-import { useGymStore } from '@/stores/gymStore'
-import { ref, watchEffect, computed } from 'vue'
+import DataManagement from '@/components/DataManagement.vue'
+import ExerciseCard from '@/components/ExerciseCard.vue'
+import { MAX_NAME_LENGTH, normalizeVideoUrl, toLocalDateKey, useGymStore } from '@/stores/gymStore'
+import { computed, reactive, ref, watchEffect } from 'vue'
 
-// --- Store und State ---
+interface ExerciseForm {
+  name: string
+  videoUrl: string
+}
+
 const gymStore = useGymStore()
 
 const newCategoryName = ref('')
-const newExerciseForms = ref<{ [key: string]: { name: string; videoUrl: string } }>({})
-const newSetForms = ref<{ [key: string]: { weight: string; reps: string } }>({})
+const categoryError = ref('')
+const pageStatus = ref('')
+const newExerciseForms = reactive<Record<string, ExerciseForm>>({})
+const exerciseErrors = reactive<Record<string, string>>({})
 const openExerciseFormId = ref<string | null>(null)
-
 const collapsedCategories = ref<string[]>([])
-const collapsedHistories = ref<string[]>([])
+const confirmCategoryDeleteId = ref<string | null>(null)
 
-// --- Computed Properties ---
 const totalSetsToday = computed(() => {
-  let count = 0
-  const today = new Date().toISOString().split('T')[0]
-  gymStore.categories.forEach((cat) => {
-    cat.exercises.forEach((ex) => {
-      const todaySession = ex.history.find((session) => session.date === today)
-      if (todaySession) {
-        count += todaySession.sets.length
-      }
-    })
-  })
-  return count
+  const today = toLocalDateKey()
+
+  return gymStore.categories.reduce(
+    (total, category) =>
+      total +
+      category.exercises.reduce(
+        (exerciseTotal, exercise) =>
+          exerciseTotal +
+          (exercise.history.find((session) => session.date === today)?.sets.length ?? 0),
+        0,
+      ),
+    0,
+  )
 })
 
-// --- Lifecycle Hooks ---
 watchEffect(() => {
-  gymStore.categories.forEach((cat) => {
-    if (!newExerciseForms.value[cat.id]) {
-      newExerciseForms.value[cat.id] = { name: '', videoUrl: '' }
+  for (const category of gymStore.categories) {
+    if (!newExerciseForms[category.id]) {
+      newExerciseForms[category.id] = { name: '', videoUrl: '' }
     }
-    cat.exercises.forEach((ex) => {
-      if (!newSetForms.value[ex.id]) {
-        newSetForms.value[ex.id] = { weight: '', reps: '' }
-      }
-    })
-  })
+  }
 })
 
-// --- Methoden ---
-function toggleCategory(categoryId: string) {
-  const index = collapsedCategories.value.indexOf(categoryId)
-  if (index === -1) {
-    collapsedCategories.value.push(categoryId)
-  } else {
-    collapsedCategories.value.splice(index, 1)
-  }
+function isCategoryCollapsed(categoryId: string) {
+  return collapsedCategories.value.includes(categoryId)
 }
 
-function toggleHistory(exerciseId: string) {
-  const index = collapsedHistories.value.indexOf(exerciseId)
-  if (index === -1) {
-    collapsedHistories.value.push(exerciseId)
-  } else {
-    collapsedHistories.value.splice(index, 1)
-  }
+function toggleCategory(categoryId: string) {
+  collapsedCategories.value = isCategoryCollapsed(categoryId)
+    ? collapsedCategories.value.filter((id) => id !== categoryId)
+    : [...collapsedCategories.value, categoryId]
 }
 
 function handleAddCategory() {
-  gymStore.addCategory(newCategoryName.value)
+  categoryError.value = ''
+  pageStatus.value = ''
+  const name = newCategoryName.value.trim()
+
+  if (!name) {
+    categoryError.value = 'Gib einen Namen für die Kategorie ein.'
+    return
+  }
+
+  if (name.length > MAX_NAME_LENGTH) {
+    categoryError.value = `Der Name darf höchstens ${MAX_NAME_LENGTH} Zeichen lang sein.`
+    return
+  }
+
+  if (!gymStore.addCategory(name)) {
+    categoryError.value = 'Die Kategorie konnte nicht hinzugefügt werden.'
+    return
+  }
+
   newCategoryName.value = ''
+  pageStatus.value = `Kategorie „${name}“ hinzugefügt.`
 }
 
 function handleDeleteCategory(categoryId: string, categoryName: string) {
-  if (
-    window.confirm(
-      `Möchtest du die Kategorie "${categoryName}" und alle darin enthaltenen Übungen wirklich löschen?`,
-    )
-  ) {
-    gymStore.deleteCategory(categoryId)
+  pageStatus.value = ''
+
+  if (gymStore.deleteCategory(categoryId)) {
+    confirmCategoryDeleteId.value = null
+    pageStatus.value = `Kategorie „${categoryName}“ gelöscht.`
   }
+}
+
+function openExerciseForm(categoryId: string) {
+  openExerciseFormId.value = categoryId
+  exerciseErrors[categoryId] = ''
+}
+
+function closeExerciseForm(categoryId: string) {
+  openExerciseFormId.value = null
+  exerciseErrors[categoryId] = ''
+}
+
+function handleExerciseDeleted(exerciseName: string) {
+  pageStatus.value = `Übung „${exerciseName}“ gelöscht.`
 }
 
 function handleAddExercise(categoryId: string) {
-  const form = newExerciseForms.value[categoryId]
-  if (!form || !form.name) return
-  gymStore.addExercise(categoryId, form.name, form.videoUrl)
+  const form = newExerciseForms[categoryId]
+  exerciseErrors[categoryId] = ''
+  pageStatus.value = ''
+
+  if (!form) return
+
+  const name = form.name.trim()
+  if (!name) {
+    exerciseErrors[categoryId] = 'Gib einen Namen für die Übung ein.'
+    return
+  }
+
+  if (name.length > MAX_NAME_LENGTH) {
+    exerciseErrors[categoryId] = `Der Name darf höchstens ${MAX_NAME_LENGTH} Zeichen lang sein.`
+    return
+  }
+
+  const videoUrl = normalizeVideoUrl(form.videoUrl)
+  if (videoUrl === null) {
+    exerciseErrors[categoryId] = 'Der Link muss eine gültige HTTP- oder HTTPS-Adresse sein.'
+    return
+  }
+
+  if (!gymStore.addExercise(categoryId, name, videoUrl || undefined)) {
+    exerciseErrors[categoryId] = 'Die Übung konnte nicht hinzugefügt werden.'
+    return
+  }
+
   form.name = ''
   form.videoUrl = ''
   openExerciseFormId.value = null
-}
-
-function handleDeleteExercise(categoryId: string, exerciseId: string, exerciseName: string) {
-  if (window.confirm(`Möchtest du die Übung "${exerciseName}" wirklich löschen?`)) {
-    gymStore.deleteExercise(categoryId, exerciseId)
-  }
-}
-
-function handleLogSet(exerciseId: string) {
-  const form = newSetForms.value[exerciseId]
-  if (!form || !form.weight || !form.reps) {
-    alert('Bitte gib Gewicht und Wiederholungen ein.')
-    return
-  }
-
-  const weightStr = form.weight.replace(',', '.')
-  const weightNum = parseFloat(weightStr)
-  const repsNum = parseInt(form.reps, 10)
-
-  if (isNaN(weightNum) || isNaN(repsNum) || weightNum < 0 || repsNum <= 0) {
-    alert('Bitte gib gültige, positive Zahlen ein.')
-    return
-  }
-
-  gymStore.logSet(exerciseId, { weight: weightNum, reps: repsNum })
-
-  form.reps = ''
-}
-
-function formatDate(dateString: string) {
-  const date = new Date(dateString)
-  return new Intl.DateTimeFormat('de-DE', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(date)
+  pageStatus.value = `Übung „${name}“ hinzugefügt.`
 }
 </script>
 
-<style>
-/* CSS für die sanfte Ein- und Ausklapp-Animation */
-.v-enter-active,
-.v-leave-active {
-  transition:
-    opacity 0.3s ease,
-    transform 0.3s ease;
-  transform-origin: top;
-}
-
-.v-enter-from,
-.v-leave-to {
-  opacity: 0;
-  transform: scaleY(0.8);
-}
-</style>
-
 <template>
-  <div class="bg-gray-50 font-sans min-h-screen">
-    <div class="max-w-4xl mx-auto p-4 sm:p-6">
-      <header class="mb-6">
-        <h1 class="text-4xl font-bold text-gray-900 tracking-tight">GymBuddie</h1>
-        <p v-if="totalSetsToday > 0" class="text-gray-600">
+  <main class="min-h-screen bg-gray-50 font-sans text-gray-900">
+    <div class="mx-auto w-full max-w-4xl px-3 py-5 sm:px-6 sm:py-7">
+      <header class="mb-7">
+        <h1 class="break-words text-4xl font-bold tracking-tight text-gray-950">GymBuddie</h1>
+        <p v-if="totalSetsToday > 0" class="mt-1 text-gray-700">
           Stark! Du hast heute schon
-          <span class="font-bold text-blue-600">{{ totalSetsToday }}</span> Sätze absolviert.
+          <strong class="font-bold text-blue-700">{{ totalSetsToday }}</strong>
+          {{ totalSetsToday === 1 ? 'Satz' : 'Sätze' }} absolviert.
         </p>
-        <p v-else class="text-gray-600">Zeit, ins Training zu starten!</p>
+        <p v-else class="mt-1 text-gray-700">Zeit, ins Training zu starten!</p>
       </header>
 
-      <div class="mb-8">
-        <form @submit.prevent="handleAddCategory" class="flex gap-2 items-center">
-          <input
-            v-model="newCategoryName"
-            type="text"
-            placeholder="Neue Kategorie (z.B. Push, Pull...)"
-            class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
-          />
-          <button
-            type="submit"
-            class="bg-blue-600 text-white font-semibold px-4 py-3 rounded-xl hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors shrink-0"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+      <section aria-labelledby="new-category-heading" class="mb-8">
+        <h2 id="new-category-heading" class="mb-2 text-lg font-bold text-gray-900">
+          Trainingskategorie hinzufügen
+        </h2>
+        <form novalidate @submit.prevent="handleAddCategory">
+          <label for="new-category" class="text-sm font-medium text-gray-700">Name</label>
+          <div class="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-stretch gap-2">
+            <input
+              id="new-category"
+              v-model="newCategoryName"
+              type="text"
+              autocomplete="off"
+              :maxlength="MAX_NAME_LENGTH"
+              placeholder="z. B. Push oder Pull"
+              class="min-h-11 w-full min-w-0 rounded-xl border border-gray-300 px-3 text-base transition-shadow focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              :aria-invalid="Boolean(categoryError)"
+              :aria-describedby="categoryError ? 'category-error' : undefined"
+            />
+            <button
+              type="submit"
+              class="min-h-11 shrink-0 rounded-xl bg-blue-600 px-3 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 sm:px-4"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 6v6m0 0v6m0-6h6m-6 0H6"
-              />
-            </svg>
-          </button>
-        </form>
-      </div>
-
-      <div
-        v-if="gymStore.categories.length === 0"
-        class="text-center text-gray-500 bg-white p-10 rounded-xl shadow-sm"
-      >
-        <p class="font-semibold">Willkommen bei GymBuddie!</p>
-        <p>Füge deine erste Trainingskategorie hinzu, um loszulegen.</p>
-      </div>
-
-      <div class="space-y-4">
-        <div
-          v-for="category in gymStore.categories"
-          :key="category.id"
-          class="bg-white rounded-xl shadow-sm transition-all overflow-hidden"
-        >
-          <div
-            @click="toggleCategory(category.id)"
-            class="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition-colors"
+              Hinzufügen
+            </button>
+          </div>
+          <p
+            v-if="categoryError"
+            id="category-error"
+            class="mt-2 text-sm text-red-700"
+            role="alert"
           >
-            <h3 class="text-xl font-bold text-gray-800">{{ category.name }}</h3>
-            <div class="flex items-center gap-3">
+            {{ categoryError }}
+          </p>
+        </form>
+      </section>
+
+      <p
+        v-if="pageStatus"
+        class="mb-4 rounded-lg bg-green-50 p-3 text-sm text-green-800"
+        aria-live="polite"
+      >
+        {{ pageStatus }}
+      </p>
+
+      <section aria-labelledby="training-heading">
+        <h2 id="training-heading" class="mb-3 text-2xl font-bold text-gray-950">Dein Training</h2>
+
+        <div
+          v-if="gymStore.categories.length === 0"
+          class="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-600 shadow-sm sm:p-10"
+        >
+          <p class="font-semibold text-gray-900">Noch keine Trainingskategorien</p>
+          <p class="mt-1">Füge oben deine erste Kategorie hinzu, um loszulegen.</p>
+        </div>
+
+        <div v-else class="space-y-4">
+          <section
+            v-for="category in gymStore.categories"
+            :key="category.id"
+            class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm"
+            :aria-labelledby="`category-${category.id}`"
+          >
+            <div class="flex min-w-0 items-stretch border-b border-transparent">
+              <h3
+                :id="`category-${category.id}`"
+                class="flex min-w-0 flex-1 text-xl font-bold text-gray-900"
+              >
+                <button
+                  type="button"
+                  class="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 px-4 text-left transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600"
+                  :aria-expanded="!isCategoryCollapsed(category.id)"
+                  :aria-controls="`category-content-${category.id}`"
+                  @click="toggleCategory(category.id)"
+                >
+                  <span class="min-w-0 break-words">{{ category.name }}</span>
+                  <svg
+                    aria-hidden="true"
+                    class="h-6 w-6 shrink-0 text-gray-500 transition-transform duration-200"
+                    :class="{ 'rotate-180': !isCategoryCollapsed(category.id) }"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="m19 9-7 7-7-7"
+                    />
+                  </svg>
+                </button>
+              </h3>
               <button
-                @click.stop="handleDeleteCategory(category.id, category.name)"
-                class="text-gray-400 hover:text-red-500 transition-colors p-1 rounded-full z-10"
+                type="button"
+                class="inline-flex min-h-14 min-w-14 shrink-0 items-center justify-center text-gray-500 transition-colors hover:bg-red-50 hover:text-red-700 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-red-600"
+                :aria-label="`Kategorie ${category.name} löschen`"
+                :aria-expanded="confirmCategoryDeleteId === category.id"
+                :aria-controls="`delete-category-${category.id}`"
+                @click="
+                  confirmCategoryDeleteId =
+                    confirmCategoryDeleteId === category.id ? null : category.id
+                "
               >
                 <svg
-                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
                   class="h-5 w-5"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -216,188 +264,128 @@ function formatDate(dateString: string) {
                     stroke-linecap="round"
                     stroke-linejoin="round"
                     stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
+                    d="M6 18 18 6M6 6l12 12"
                   />
                 </svg>
               </button>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-6 w-6 text-gray-400 transition-transform duration-300"
-                :class="{ 'rotate-180': !collapsedCategories.includes(category.id) }"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
             </div>
-          </div>
 
-          <Transition>
-            <div v-if="!collapsedCategories.includes(category.id)">
-              <div class="px-4 pb-4 space-y-3">
-                <div
-                  v-for="exercise in category.exercises"
-                  :key="exercise.id"
-                  class="border-t border-gray-100 pt-3"
+            <div
+              v-if="confirmCategoryDeleteId === category.id"
+              :id="`delete-category-${category.id}`"
+              class="border-t border-red-200 bg-red-50 p-4 text-sm text-red-950"
+              role="group"
+              :aria-label="`Löschen der Kategorie ${category.name} bestätigen`"
+            >
+              <p>Kategorie, Übungen und gesamte Historie wirklich löschen?</p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  class="min-h-11 rounded-lg bg-red-700 px-4 font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+                  @click="handleDeleteCategory(category.id, category.name)"
                 >
-                  <div class="flex justify-between items-start">
-                    <div>
-                      <h4 class="font-semibold text-lg text-gray-700">{{ exercise.name }}</h4>
-                      <a
-                        v-if="exercise.videoUrl"
-                        :href="exercise.videoUrl"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="text-sm text-blue-500 hover:underline"
-                      >
-                        Anleitung ansehen
-                      </a>
-                    </div>
-                    <button
-                      @click="handleDeleteExercise(category.id, exercise.id, exercise.name)"
-                      class="text-gray-400 hover:text-red-500 transition-colors p-1 rounded-full shrink-0 ml-2"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="h-4 w-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </div>
+                  Endgültig löschen
+                </button>
+                <button
+                  type="button"
+                  class="min-h-11 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                  @click="confirmCategoryDeleteId = null"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
 
-                  <form
-                    @submit.prevent="handleLogSet(exercise.id)"
-                    class="grid grid-cols-3 gap-2 mt-3"
-                  >
-                    <input
-                      v-model="newSetForms[exercise.id].weight"
-                      type="text"
-                      inputmode="decimal"
-                      step="any"
-                      placeholder="kg"
-                      class="p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none w-full text-center"
-                    />
-                    <input
-                      v-model="newSetForms[exercise.id].reps"
-                      type="text"
-                      inputmode="numeric"
-                      step="1"
-                      placeholder="Wdh"
-                      class="p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none w-full text-center"
-                    />
-                    <button
-                      type="submit"
-                      class="col-span-1 bg-blue-500 text-white font-semibold p-2 rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-                    >
-                      Satz +
-                    </button>
-                  </form>
+            <Transition>
+              <div
+                v-show="!isCategoryCollapsed(category.id)"
+                :id="`category-content-${category.id}`"
+                class="px-4 pb-4"
+              >
+                <p
+                  v-if="category.exercises.length === 0 && openExerciseFormId !== category.id"
+                  class="border-t border-gray-100 py-5 text-sm text-gray-600"
+                >
+                  In dieser Kategorie gibt es noch keine Übungen.
+                </p>
 
-                  <div v-if="exercise.history.length > 0" class="mt-3">
-                    <div
-                      @click="toggleHistory(exercise.id)"
-                      class="flex justify-between items-center cursor-pointer p-2 -mx-2 rounded-lg hover:bg-gray-50"
-                    >
-                      <h5 class="font-semibold text-sm text-gray-600">Trainingshistorie</h5>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="h-5 w-5 text-gray-400 transition-transform duration-300"
-                        :class="{ 'rotate-180': !collapsedHistories.includes(exercise.id) }"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M19 9l-7 7-7-7"
-                        />
-                      </svg>
-                    </div>
-                    <Transition>
-                      <div
-                        v-if="!collapsedHistories.includes(exercise.id)"
-                        class="space-y-3 text-sm mt-2"
-                      >
-                        <div
-                          v-for="session in exercise.history"
-                          :key="session.date"
-                          class="bg-gray-50 p-2 rounded-lg"
-                        >
-                          <p class="font-semibold text-gray-800 mb-1">
-                            {{ formatDate(session.date) }}
-                          </p>
-                          <ul class="space-y-1">
-                            <li
-                              v-for="(set, index) in session.sets"
-                              :key="set.id"
-                              class="flex justify-between items-center text-gray-600"
-                            >
-                              <span>Satz {{ session.sets.length - index }}</span>
-                              <span class="font-mono text-gray-800 font-medium"
-                                >{{ set.weight }}kg &times; {{ set.reps }} Wdh</span
-                              >
-                            </li>
-                          </ul>
-                        </div>
-                      </div>
-                    </Transition>
-                  </div>
+                <div v-else class="space-y-1">
+                  <ExerciseCard
+                    v-for="exercise in category.exercises"
+                    :key="exercise.id"
+                    :category-id="category.id"
+                    :exercise="exercise"
+                    @deleted="handleExerciseDeleted"
+                  />
                 </div>
 
-                <div class="border-t border-gray-100 pt-3">
-                  <div v-if="openExerciseFormId !== category.id">
-                    <button
-                      @click="openExerciseFormId = category.id"
-                      class="w-full text-left text-blue-600 font-semibold p-2 rounded-lg hover:bg-blue-50 transition-colors"
-                    >
-                      + Übung hinzufügen
-                    </button>
-                  </div>
+                <div class="mt-3 border-t border-gray-100 pt-3">
+                  <button
+                    v-if="openExerciseFormId !== category.id"
+                    type="button"
+                    class="min-h-11 w-full rounded-lg px-3 text-left font-semibold text-blue-700 transition-colors hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                    @click="openExerciseForm(category.id)"
+                  >
+                    + Übung hinzufügen
+                  </button>
+
                   <form
                     v-else
+                    class="rounded-lg bg-blue-50 p-3"
+                    novalidate
                     @submit.prevent="handleAddExercise(category.id)"
-                    class="bg-blue-50 p-3 rounded-lg space-y-2"
                   >
-                    <input
-                      v-model="newExerciseForms[category.id].name"
-                      type="text"
-                      placeholder="Name der Übung"
-                      class="w-full p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none"
-                    />
-                    <input
-                      v-model="newExerciseForms[category.id].videoUrl"
-                      type="text"
-                      placeholder="Optional: Video-Link"
-                      class="w-full p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none"
-                    />
-                    <div class="flex gap-2">
+                    <fieldset>
+                      <legend class="font-semibold text-gray-900">Neue Übung</legend>
+                      <div class="mt-2 space-y-3">
+                        <label class="block text-sm font-medium text-gray-700">
+                          Name der Übung
+                          <input
+                            v-model="newExerciseForms[category.id].name"
+                            type="text"
+                            autofocus
+                            autocomplete="off"
+                            :maxlength="MAX_NAME_LENGTH"
+                            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 bg-white px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                            :aria-invalid="Boolean(exerciseErrors[category.id])"
+                          />
+                        </label>
+                        <label class="block text-sm font-medium text-gray-700">
+                          Anleitung als Link
+                          <span class="font-normal text-gray-500">(optional)</span>
+                          <input
+                            v-model="newExerciseForms[category.id].videoUrl"
+                            type="url"
+                            inputmode="url"
+                            autocomplete="url"
+                            maxlength="2048"
+                            placeholder="https://…"
+                            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 bg-white px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                            :aria-invalid="Boolean(exerciseErrors[category.id])"
+                          />
+                        </label>
+                      </div>
+                    </fieldset>
+
+                    <p
+                      v-if="exerciseErrors[category.id]"
+                      class="mt-2 text-sm text-red-700"
+                      role="alert"
+                    >
+                      {{ exerciseErrors[category.id] }}
+                    </p>
+
+                    <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
                       <button
                         type="submit"
-                        class="w-full bg-blue-500 text-white font-semibold p-2 rounded-lg hover:bg-blue-600 transition-colors"
+                        class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
                       >
-                        Speichern
+                        Übung speichern
                       </button>
                       <button
-                        @click="openExerciseFormId = null"
                         type="button"
-                        class="w-full bg-gray-200 text-gray-700 font-semibold p-2 rounded-lg hover:bg-gray-300 transition-colors"
+                        class="min-h-11 flex-1 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                        @click="closeExerciseForm(category.id)"
                       >
                         Abbrechen
                       </button>
@@ -405,10 +393,25 @@ function formatDate(dateString: string) {
                   </form>
                 </div>
               </div>
-            </div>
-          </Transition>
+            </Transition>
+          </section>
         </div>
-      </div>
+      </section>
+
+      <DataManagement />
     </div>
-  </div>
+  </main>
 </template>
+
+<style>
+.v-enter-active,
+.v-leave-active {
+  transform-origin: top;
+  transition: transform 0.2s ease;
+}
+
+.v-enter-from,
+.v-leave-to {
+  transform: scaleY(0.97);
+}
+</style>
