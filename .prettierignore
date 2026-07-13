@@ -1,0 +1,7 @@
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Native/generated vector assets are not supported by Prettier's parsers.
+public/*.svg
