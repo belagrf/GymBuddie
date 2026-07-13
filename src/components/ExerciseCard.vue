@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useTransientMessage } from '@/composables/useTransientMessage'
 import type { Exercise, SetEntry } from '@/stores/gymStore'
 import { isValidSetValues, MAX_REPS, MAX_WEIGHT_KG, useGymStore } from '@/stores/gymStore'
 import { computed, reactive, ref } from 'vue'
@@ -16,8 +17,8 @@ const gymStore = useGymStore()
 
 const newSet = reactive({ weight: '', reps: '' })
 const setError = ref('')
-const setStatus = ref('')
-const historyExpanded = ref(false)
+const { message: setStatus, show: showSetStatus, clear: clearSetStatus } = useTransientMessage()
+const historyExpanded = ref(true)
 const confirmExerciseDelete = ref(false)
 const confirmSetDeleteId = ref<string | null>(null)
 const editingSetId = ref<string | null>(null)
@@ -59,7 +60,7 @@ function parseReps(value: string): number | null {
 
 function handleLogSet() {
   setError.value = ''
-  setStatus.value = ''
+  clearSetStatus()
 
   const weight = parseWeight(newSet.weight)
   const reps = parseReps(newSet.reps)
@@ -75,7 +76,7 @@ function handleLogSet() {
   }
 
   newSet.reps = ''
-  setStatus.value = 'Satz gespeichert.'
+  showSetStatus('Satz gespeichert.')
 }
 
 function startEdit(set: SetEntry) {
@@ -84,7 +85,7 @@ function startEdit(set: SetEntry) {
   editSet.weight = String(set.weight).replace('.', ',')
   editSet.reps = String(set.reps)
   editError.value = ''
-  setStatus.value = ''
+  clearSetStatus()
 }
 
 function cancelEdit() {
@@ -109,7 +110,7 @@ function handleUpdateSet(setId: string) {
   }
 
   editingSetId.value = null
-  setStatus.value = 'Satz aktualisiert.'
+  showSetStatus('Satz aktualisiert.')
 }
 
 function askToDeleteSet(setId: string) {
@@ -126,7 +127,7 @@ function handleDeleteSet(setId: string) {
   }
 
   confirmSetDeleteId.value = null
-  setStatus.value = 'Satz gelöscht.'
+  showSetStatus('Satz gelöscht.')
 }
 
 function handleDeleteExercise() {
@@ -266,9 +267,7 @@ function formatDate(dateString: string) {
       >
         {{ setError }}
       </p>
-      <p v-if="setStatus" class="mt-2 text-sm text-green-700" aria-live="polite">
-        {{ setStatus }}
-      </p>
+      <p class="sr-only" aria-live="polite">{{ setStatus }}</p>
     </form>
 
     <section

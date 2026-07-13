@@ -15,6 +15,7 @@ test('loads the application without detectable accessibility violations', async 
   await expect(page.getByRole('heading', { level: 1, name: 'GymBuddie' })).toBeVisible()
   await waitForServiceWorker(page)
   await expect(page.getByRole('status')).toBeVisible()
+  await expect(page.getByText('Lokaler Speicher bereit')).toHaveCount(0)
 
   const accessibilityScanResults = await new AxeBuilder({ page }).analyze()
   expect(accessibilityScanResults.violations).toEqual([])
@@ -56,8 +57,11 @@ test('supports the core workout flow at a 320px viewport without overflow', asyn
   await page.getByLabel('Wiederholungen', { exact: true }).fill('8')
   await page.getByRole('button', { name: 'Satz speichern' }).click()
 
-  await expect(page.getByText('Satz gespeichert.')).toBeVisible()
-  await page.getByRole('button', { name: /Trainingshistorie/ }).click()
+  await expect(page.getByText('Satz gespeichert.')).toHaveClass(/sr-only/)
+  await expect(page.getByRole('button', { name: /Trainingshistorie/ })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  )
   await expect(page.getByText('62.5 kg × 8 Wdh.')).toBeVisible()
 
   const pageWidth = await page.evaluate(() => ({
@@ -102,7 +106,10 @@ test('migrates legacy local data and preserves an exact backup', async ({ page }
   await page.reload()
 
   await expect(page.getByText(/3 Sätze absolviert/)).toBeVisible()
-  await page.getByRole('button', { name: /Trainingshistorie/ }).click()
+  await expect(page.getByRole('button', { name: /Trainingshistorie/ })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  )
   await expect(page.getByText('60 kg × 8 Wdh.')).toHaveCount(3)
 
   const migratedStorage = await page.evaluate(() => ({

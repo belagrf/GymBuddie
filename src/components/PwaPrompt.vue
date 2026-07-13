@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRegisterSW } from 'virtual:pwa-register/vue'
 
 const registrationError = ref('')
 let updateTimer: number | undefined
+let offlineReadyTimer: number | undefined
 
 const { offlineReady, needRefresh, updateServiceWorker } = useRegisterSW({
   onRegisteredSW(_serviceWorkerUrl, registration) {
@@ -25,6 +26,20 @@ const isVisible = computed(
   () => offlineReady.value || needRefresh.value || Boolean(registrationError.value),
 )
 
+watch([offlineReady, needRefresh, registrationError], ([isOfflineReady, refreshNeeded, error]) => {
+  if (offlineReadyTimer !== undefined) {
+    window.clearTimeout(offlineReadyTimer)
+    offlineReadyTimer = undefined
+  }
+
+  if (isOfflineReady && !refreshNeeded && !error) {
+    offlineReadyTimer = window.setTimeout(() => {
+      offlineReady.value = false
+      offlineReadyTimer = undefined
+    }, 6_000)
+  }
+})
+
 function dismiss() {
   offlineReady.value = false
   needRefresh.value = false
@@ -33,6 +48,7 @@ function dismiss() {
 
 onBeforeUnmount(() => {
   if (updateTimer !== undefined) window.clearInterval(updateTimer)
+  if (offlineReadyTimer !== undefined) window.clearTimeout(offlineReadyTimer)
 })
 </script>
 
