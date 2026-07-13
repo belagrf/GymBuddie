@@ -1,29 +1,17 @@
 <script setup lang="ts">
+import { useTransientMessage } from '@/composables/useTransientMessage'
 import { toLocalDateKey, useGymStore } from '@/stores/gymStore'
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 
 const gymStore = useGymStore()
 
 const importInput = ref<HTMLInputElement | null>(null)
 const pendingImport = ref<{ name: string; contents: string } | null>(null)
-const dataStatus = ref('')
+const { message: dataStatus, show: showDataStatus, clear: clearDataStatus } = useTransientMessage()
 const dataError = ref('')
 
-const persistenceLabel = computed(() => {
-  switch (gymStore.persistenceStatus) {
-    case 'saved':
-      return 'Änderungen lokal gespeichert'
-    case 'synced':
-      return 'Änderungen aus einem anderen Tab übernommen'
-    case 'error':
-      return 'Speichern fehlgeschlagen'
-    default:
-      return 'Lokaler Speicher bereit'
-  }
-})
-
 function resetMessages() {
-  dataStatus.value = ''
+  clearDataStatus()
   dataError.value = ''
   gymStore.clearPersistenceError()
 }
@@ -40,7 +28,7 @@ function handleExport() {
     link.download = `gymbuddie-backup-${toLocalDateKey()}.json`
     link.click()
     URL.revokeObjectURL(objectUrl)
-    dataStatus.value = 'Backup wurde erstellt.'
+    showDataStatus('Backup wurde erstellt.')
   } catch {
     dataError.value = 'Das Backup konnte nicht erstellt werden.'
   }
@@ -80,7 +68,7 @@ function confirmImport() {
   const imported = gymStore.importData(pendingImport.value.contents)
 
   if (imported) {
-    dataStatus.value = 'Backup wurde importiert.'
+    showDataStatus('Backup wurde importiert.')
     cancelImport()
     return
   }
@@ -96,19 +84,9 @@ function confirmImport() {
     class="mt-10 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
     aria-labelledby="data-heading"
   >
-    <div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-      <div>
-        <h2 id="data-heading" class="text-lg font-bold text-gray-900">Daten sichern</h2>
-        <p class="text-sm text-gray-600">Deine Trainingsdaten bleiben auf diesem Gerät.</p>
-      </div>
-      <p class="mt-1 flex items-center gap-2 text-xs text-gray-600" aria-live="polite">
-        <span
-          aria-hidden="true"
-          class="h-2.5 w-2.5 rounded-full"
-          :class="gymStore.persistenceStatus === 'error' ? 'bg-red-600' : 'bg-green-600'"
-        ></span>
-        {{ persistenceLabel }}
-      </p>
+    <div>
+      <h2 id="data-heading" class="text-lg font-bold text-gray-900">Daten sichern</h2>
+      <p class="text-sm text-gray-600">Deine Trainingsdaten bleiben auf diesem Gerät.</p>
     </div>
 
     <div class="mt-4 flex flex-wrap gap-2">

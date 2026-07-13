@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import DataManagement from '@/components/DataManagement.vue'
 import ExerciseCard from '@/components/ExerciseCard.vue'
+import { useTransientMessage } from '@/composables/useTransientMessage'
 import { MAX_NAME_LENGTH, normalizeVideoUrl, toLocalDateKey, useGymStore } from '@/stores/gymStore'
 import { computed, reactive, ref, watchEffect } from 'vue'
 
@@ -13,7 +14,7 @@ const gymStore = useGymStore()
 
 const newCategoryName = ref('')
 const categoryError = ref('')
-const pageStatus = ref('')
+const { message: pageStatus, show: showPageStatus, clear: clearPageStatus } = useTransientMessage()
 const newExerciseForms = reactive<Record<string, ExerciseForm>>({})
 const exerciseErrors = reactive<Record<string, string>>({})
 const openExerciseFormId = ref<string | null>(null)
@@ -56,7 +57,7 @@ function toggleCategory(categoryId: string) {
 
 function handleAddCategory() {
   categoryError.value = ''
-  pageStatus.value = ''
+  clearPageStatus()
   const name = newCategoryName.value.trim()
 
   if (!name) {
@@ -75,15 +76,15 @@ function handleAddCategory() {
   }
 
   newCategoryName.value = ''
-  pageStatus.value = `Kategorie „${name}“ hinzugefügt.`
+  showPageStatus(`Kategorie „${name}“ hinzugefügt.`)
 }
 
 function handleDeleteCategory(categoryId: string, categoryName: string) {
-  pageStatus.value = ''
+  clearPageStatus()
 
   if (gymStore.deleteCategory(categoryId)) {
     confirmCategoryDeleteId.value = null
-    pageStatus.value = `Kategorie „${categoryName}“ gelöscht.`
+    showPageStatus(`Kategorie „${categoryName}“ gelöscht.`)
   }
 }
 
@@ -98,13 +99,13 @@ function closeExerciseForm(categoryId: string) {
 }
 
 function handleExerciseDeleted(exerciseName: string) {
-  pageStatus.value = `Übung „${exerciseName}“ gelöscht.`
+  showPageStatus(`Übung „${exerciseName}“ gelöscht.`)
 }
 
 function handleAddExercise(categoryId: string) {
   const form = newExerciseForms[categoryId]
   exerciseErrors[categoryId] = ''
-  pageStatus.value = ''
+  clearPageStatus()
 
   if (!form) return
 
@@ -133,7 +134,7 @@ function handleAddExercise(categoryId: string) {
   form.name = ''
   form.videoUrl = ''
   openExerciseFormId.value = null
-  pageStatus.value = `Übung „${name}“ hinzugefügt.`
+  showPageStatus(`Übung „${name}“ hinzugefügt.`)
 }
 </script>
 
@@ -186,13 +187,7 @@ function handleAddExercise(categoryId: string) {
         </form>
       </section>
 
-      <p
-        v-if="pageStatus"
-        class="mb-4 rounded-lg bg-green-50 p-3 text-sm text-green-800"
-        aria-live="polite"
-      >
-        {{ pageStatus }}
-      </p>
+      <p class="sr-only" aria-live="polite">{{ pageStatus }}</p>
 
       <section aria-labelledby="training-heading">
         <h2 id="training-heading" class="mb-3 text-2xl font-bold text-gray-950">Dein Training</h2>
