@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
 
-import { resolveBasePath } from './scripts/base-path'
+import { resolveBasePath } from './scripts/base-path.ts'
 
 // A dedicated port so a stale `npm run preview` (4173) is never mistaken for the test build.
 const port = 4174

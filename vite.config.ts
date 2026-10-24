@@ -5,7 +5,7 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 import tailwindcss from '@tailwindcss/vite'
 
-import { resolveBasePath } from './scripts/base-path'
+import { resolveBasePath } from './scripts/base-path.ts'
 
 const base = resolveBasePath()
 
