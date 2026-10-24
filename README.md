@@ -27,15 +27,24 @@ Aktivierung des Service Workers funktioniert die App auch ohne Internetverbindun
 
 ## Funktionen
 
-- Trainingskategorien und Übungen verwalten, umbenennen und bearbeiten, ohne die Historie zu verlieren
-- Gewicht (mit Dezimalkomma, z. B. `42,5`) und Wiederholungen für einzelne Sätze erfassen
+- Trainingskategorien und Übungen verwalten, umbenennen, bearbeiten und per Pfeiltasten anordnen
+- Kompakte Übungskarten mit Zusammenfassung; Übungen mit Sätzen von heute sind aufgeklappt
+- **Letztes Mal** auf einen Blick, mit **Wiederholen** für den passenden Satz vom letzten Training
+- Gewicht (mit Dezimalkomma, z. B. `42,5`) und Wiederholungen eintippen oder mit **+ / −** anpassen
+  (Gewichtsschritt einstellbar)
+- **Pausentimer**, der nach jedem Satz startet: Countdown am unteren Rand, ±‑Tasten, Ton und
+  Vibration am Ende, Bildschirm bleibt währenddessen an
+- **Rekorde**: Hinweis bei neuem Höchstgewicht oder neuem geschätztem Maximum (Epley), Pokal in der
+  Historie
+- **Fortschrittsdiagramm** pro Übung mit Tastaturbedienung und Tabellenansicht
 - Gespeicherte Sätze nachträglich bearbeiten oder löschen
-- Trainingshistorie nach Trainingstag gruppiert anzeigen: die letzten drei Einheiten sofort,
-  ältere auf Wunsch
+- Trainingshistorie nach Trainingstag gruppiert: die letzten drei Einheiten sofort, ältere auf Wunsch
 - Tagesfortschritt direkt auf der Startseite sehen
 - Optionale Links zu Übungsanleitungen hinterlegen (`youtube.com/…` wird automatisch zu `https://…`)
-- Vollständige JSON-Backups exportieren und nach einer Vorschau kontrolliert importieren
+- Backups teilen (z. B. in iCloud, Google Drive oder per Nachricht) oder herunterladen und nach einer
+  Vorschau kontrolliert importieren; Erinnerung, wenn das letzte Backup älter als 14 Tage ist
 - Automatische Sicherungskopien vor dem Ersetzen oder Bereinigen von Daten
+- Helles und dunkles Design, standardmäßig passend zum Gerät
 - Als App installieren und nach dem ersten Laden offline verwenden
 - Tastaturbedienbare, responsive Oberfläche mit Unterstützung für reduzierte Animationen
 
@@ -44,8 +53,12 @@ Aktivierung des Service Workers funktioniert die App auch ohne Internetverbindun
 1. Unter **Trainingskategorie hinzufügen** einen Namen eingeben und **Hinzufügen** wählen.
 2. In der neuen Kategorie **+ Übung hinzufügen** öffnen.
 3. **Name der Übung** und optional **Anleitung als Link** ausfüllen, danach **Übung speichern**.
-4. **Gewicht (kg)** und **Wiederholungen** eintragen und den **Satz speichern**.
-5. Gespeicherte Sätze direkt in der geöffneten **Trainingshistorie** prüfen oder bearbeiten.
+4. **Gewicht (kg)** und **Wiederholungen** eintragen oder mit **+ / −** einstellen und den
+   **Satz speichern**. Danach läuft der Pausentimer.
+5. Beim nächsten Training zeigt die Übung **Letztes Mal**; **Wiederholen** übernimmt den passenden
+   Satz.
+6. Gespeicherte Sätze in der **Trainingshistorie** prüfen oder bearbeiten, den Verlauf unter
+   **Fortschritt** ansehen.
 
 ## PWA und Offline-Verhalten
 
@@ -105,6 +118,9 @@ Die lokale Datenhaltung umfasst:
   und der Fehler direkt am Formular angezeigt,
 - automatische Bereinigung und Validierung importierter Daten,
 - sichere Migration älterer `gymData`-Bestände,
+- Geräteeinstellungen (Design, Pausentimer, Gewichtsschritt) unter `gymbuddie:settings:v1` und der
+  Ansichtszustand (auf- und zugeklappte Bereiche) unter `gymbuddie:ui:v1`. Beides ist bewusst nicht
+  Teil von Backups,
 - Sicherungskopien unter `gymbuddie:backup:*`: der Altdatenbestand vor der Migration, bis zu drei
   unveränderte Kopien beschädigter Daten und der Datenstand vor dem letzten Import. Sie lassen sich
   unter **Daten sichern** herunterladen, wiederherstellen oder löschen. Die Import-Kopie wird bei

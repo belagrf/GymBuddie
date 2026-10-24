@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { downloadTextFile } from '@/composables/download'
+import { useBackupExport } from '@/composables/useBackupExport'
 import { focusById } from '@/composables/focus'
 import { useTransientMessage } from '@/composables/useTransientMessage'
 import {
@@ -95,17 +96,22 @@ function resetFileInput() {
   if (importInput.value) importInput.value.value = ''
 }
 
+const { canShareFiles, shareBackup, downloadBackup } = useBackupExport()
+
 function handleExport() {
   resetMessages()
-
-  try {
-    downloadTextFile(`gymbuddie-backup-${toLocalDateKey()}.json`, gymStore.exportData())
-  } catch {
+  if (!downloadBackup()) {
     dataError.value = 'Das Backup konnte nicht erstellt werden.'
     return
   }
-  gymStore.markExported()
   showDataStatus('Backup wurde erstellt. Bewahre die Datei an einem sicheren Ort auf.')
+}
+
+async function handleShare() {
+  resetMessages()
+  const outcome = await shareBackup()
+  if (outcome === 'shared') showDataStatus('Backup wurde geteilt.')
+  else if (outcome === 'failed') handleExport()
 }
 
 function openImportReview(name: string, preview: BackupParseResult, source: ImportSource) {
@@ -242,32 +248,40 @@ function copyDomId(copy: RecoveryCopy) {
 
 <template>
   <section
-    class="mt-10 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+    class="mt-10 rounded-xl border border-line bg-surface p-4 shadow-sm"
     aria-labelledby="data-heading"
   >
     <div>
-      <h2
-        id="data-heading"
-        class="text-lg font-bold text-gray-900 focus:outline-none"
-        tabindex="-1"
-      >
+      <h2 id="data-heading" class="text-lg font-bold text-fg focus:outline-none" tabindex="-1">
         Daten sichern
       </h2>
-      <p class="mt-1 text-sm text-gray-600">{{ storageText }}</p>
-      <p class="mt-1 text-sm text-gray-600">{{ lastExportText }}</p>
+      <p class="mt-1 text-sm text-fg-subtle">{{ storageText }}</p>
+      <p class="mt-1 text-sm text-fg-subtle">{{ lastExportText }}</p>
     </div>
 
     <div class="mt-4 flex flex-wrap gap-2">
       <button
+        v-if="canShareFiles"
         type="button"
-        class="min-h-11 rounded-lg bg-gray-900 px-4 font-semibold text-white transition-colors hover:bg-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-900"
+        class="min-h-11 rounded-lg bg-inverse px-4 font-semibold text-inverse-fg transition-colors hover:bg-inverse-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-neutral"
+        @click="handleShare"
+      >
+        Backup teilen
+      </button>
+      <button
+        type="button"
+        :class="
+          canShareFiles
+            ? 'min-h-11 rounded-lg border border-line-strong bg-surface px-4 font-semibold text-fg transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus'
+            : 'min-h-11 rounded-lg bg-inverse px-4 font-semibold text-inverse-fg transition-colors hover:bg-inverse-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-neutral'
+        "
         @click="handleExport"
       >
-        Backup exportieren
+        {{ canShareFiles ? 'Herunterladen' : 'Backup exportieren' }}
       </button>
 
       <label
-        class="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 transition-colors hover:bg-gray-100 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-blue-600"
+        class="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-line-strong bg-surface px-4 font-semibold text-fg transition-colors hover:bg-surface-hover focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus"
       >
         Backup importieren
         <input
@@ -283,7 +297,7 @@ function copyDomId(copy: RecoveryCopy) {
 
     <div
       v-if="pendingImport"
-      class="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"
+      class="mt-4 rounded-lg border border-warn-line bg-warn-tint p-3 text-sm text-warn-fg"
       role="group"
       aria-labelledby="import-review-heading"
     >
@@ -320,21 +334,21 @@ function copyDomId(copy: RecoveryCopy) {
       <div class="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
-          class="min-h-11 rounded-lg bg-amber-800 px-4 font-semibold text-white hover:bg-amber-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800"
+          class="min-h-11 rounded-lg bg-amber-800 px-4 font-semibold text-white hover:bg-amber-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-warn"
           @click="confirmImport"
         >
           Daten ersetzen
         </button>
         <button
           type="button"
-          class="min-h-11 rounded-lg border border-amber-700 bg-white px-4 font-semibold text-amber-950 hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800"
+          class="min-h-11 rounded-lg border border-warn-line bg-surface px-4 font-semibold text-warn-fg hover:bg-warn-tint-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-warn"
           @click="handleExport"
         >
           Aktuelle Daten zuerst exportieren
         </button>
         <button
           type="button"
-          class="min-h-11 rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+          class="min-h-11 rounded-lg border border-line-strong bg-surface px-4 font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
           @click="cancelImport"
         >
           Abbrechen
@@ -342,23 +356,23 @@ function copyDomId(copy: RecoveryCopy) {
       </div>
     </div>
 
-    <p v-if="dataError" class="mt-3 text-sm text-red-700" role="alert">{{ dataError }}</p>
+    <p v-if="dataError" class="mt-3 text-sm text-danger-fg" role="alert">{{ dataError }}</p>
     <!-- Always rendered (never display:none) so screen readers announce new messages. -->
-    <p class="text-sm text-green-800 [&:not(:empty)]:mt-3" aria-live="polite">{{ dataStatus }}</p>
+    <p class="text-sm text-success-fg [&:not(:empty)]:mt-3" aria-live="polite">{{ dataStatus }}</p>
 
-    <div v-if="gymStore.recoveryCopies.length > 0" class="mt-6 border-t border-gray-100 pt-4">
-      <h3 class="font-semibold text-gray-900">Gesicherte Kopien auf diesem Gerät</h3>
-      <p class="mt-1 text-sm text-gray-600">
+    <div v-if="gymStore.recoveryCopies.length > 0" class="mt-6 border-t border-line-subtle pt-4">
+      <h3 class="font-semibold text-fg">Gesicherte Kopien auf diesem Gerät</h3>
+      <p class="mt-1 text-sm text-fg-subtle">
         GymBuddie legt diese Kopien automatisch an, bevor Daten ersetzt oder bereinigt werden.
       </p>
       <ul class="mt-3 space-y-3">
         <li
           v-for="copy in gymStore.recoveryCopies"
           :key="copy.key"
-          class="rounded-lg border border-gray-200 p-3 text-sm"
+          class="rounded-lg border border-line p-3 text-sm"
         >
-          <p class="font-medium break-words text-gray-900">{{ copy.label }}</p>
-          <p class="text-gray-600">
+          <p class="font-medium break-words text-fg">{{ copy.label }}</p>
+          <p class="text-fg-subtle">
             {{ formatSize(copy.size) }}
             <template v-if="copy.savedAt"> · Stand {{ formatDateTime(copy.savedAt) }}</template>
             <template v-if="!copy.restorable"> · nicht lesbar, nur zum Herunterladen</template>
@@ -370,11 +384,11 @@ function copyDomId(copy: RecoveryCopy) {
             role="group"
             :aria-label="`Löschen von ${copy.label} bestätigen`"
           >
-            <p class="text-red-950">Diese Kopie endgültig löschen?</p>
+            <p class="text-danger-strong">Diese Kopie endgültig löschen?</p>
             <div class="mt-2 flex flex-wrap gap-2">
               <button
                 type="button"
-                class="min-h-11 rounded-lg bg-red-700 px-4 font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+                class="min-h-11 rounded-lg bg-red-700 px-4 font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
                 @click="deleteCopy(copy)"
               >
                 Löschen
@@ -382,7 +396,7 @@ function copyDomId(copy: RecoveryCopy) {
               <button
                 :id="`delete-copy-cancel-${copyDomId(copy)}`"
                 type="button"
-                class="min-h-11 rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                class="min-h-11 rounded-lg border border-line-strong bg-surface px-4 font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 @click="cancelDeleteCopy(copy)"
               >
                 Abbrechen
@@ -393,7 +407,7 @@ function copyDomId(copy: RecoveryCopy) {
           <div v-else class="mt-2 flex flex-wrap gap-2">
             <button
               type="button"
-              class="min-h-11 rounded-lg border border-gray-500 bg-white px-3 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+              class="min-h-11 rounded-lg border border-line-strong bg-surface px-3 font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
               :aria-label="`${copy.label} herunterladen`"
               @click="downloadCopy(copy)"
             >
@@ -402,7 +416,7 @@ function copyDomId(copy: RecoveryCopy) {
             <button
               v-if="copy.restorable"
               type="button"
-              class="min-h-11 rounded-lg border border-gray-500 bg-white px-3 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+              class="min-h-11 rounded-lg border border-line-strong bg-surface px-3 font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
               :aria-label="`${copy.label} wiederherstellen`"
               @click="restoreCopy(copy)"
             >
@@ -411,7 +425,7 @@ function copyDomId(copy: RecoveryCopy) {
             <button
               :id="`delete-copy-btn-${copyDomId(copy)}`"
               type="button"
-              class="min-h-11 rounded-lg border border-red-300 bg-white px-3 font-semibold text-red-800 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+              class="min-h-11 rounded-lg border border-danger-line bg-surface px-3 font-semibold text-danger-strong hover:bg-danger-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
               :aria-label="`${copy.label} löschen`"
               @click="askToDeleteCopy(copy)"
             >

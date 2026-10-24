@@ -51,7 +51,7 @@ function reloadApp() {
   <div class="mb-6 space-y-3 empty:hidden">
     <div
       v-if="gymStore.writeBlock"
-      class="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-950"
+      class="rounded-xl border border-danger-line bg-danger-tint p-4 text-sm text-danger-strong"
       role="alert"
     >
       <p class="font-semibold">Änderungen werden derzeit nicht gespeichert.</p>
@@ -63,7 +63,7 @@ function reloadApp() {
       >
         <button
           type="button"
-          class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800"
+          class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
           @click="downloadUnreadableData"
         >
           Rohdaten herunterladen
@@ -71,7 +71,7 @@ function reloadApp() {
         <button
           id="discard-unreadable-button"
           type="button"
-          class="min-h-11 rounded-lg border border-red-300 bg-white px-4 font-semibold hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+          class="min-h-11 rounded-lg border border-danger-line bg-surface px-4 font-semibold hover:bg-danger-tint-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
           @click="askToDiscard"
         >
           Verwerfen und weitermachen
@@ -86,7 +86,7 @@ function reloadApp() {
         <div class="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
-            class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800"
+            class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
             @click="discardUnreadableData"
           >
             Endgültig verwerfen
@@ -94,7 +94,7 @@ function reloadApp() {
           <button
             id="discard-unreadable-cancel"
             type="button"
-            class="min-h-11 rounded-lg border border-red-300 bg-white px-4 font-semibold hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+            class="min-h-11 rounded-lg border border-danger-line bg-surface px-4 font-semibold hover:bg-danger-tint-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
             @click="cancelDiscard"
           >
             Abbrechen
@@ -105,7 +105,7 @@ function reloadApp() {
       <div v-else class="mt-3">
         <button
           type="button"
-          class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800"
+          class="min-h-11 rounded-lg bg-red-800 px-4 font-semibold text-white hover:bg-red-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
           @click="reloadApp"
         >
           App neu laden
@@ -117,13 +117,13 @@ function reloadApp() {
 
     <div
       v-if="gymStore.persistenceError && !gymStore.writeBlock"
-      class="flex flex-col gap-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between"
+      class="flex flex-col gap-2 rounded-xl border border-warn-line bg-warn-tint p-4 text-sm text-warn-fg sm:flex-row sm:items-center sm:justify-between"
       role="alert"
     >
       <p>{{ gymStore.persistenceError }}</p>
       <button
         type="button"
-        class="min-h-11 shrink-0 rounded-lg border border-amber-400 bg-white px-3 font-semibold hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800"
+        class="min-h-11 shrink-0 rounded-lg border border-warn-line bg-surface px-3 font-semibold hover:bg-warn-tint-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-warn"
         @click="gymStore.clearPersistenceError()"
       >
         Hinweis schließen

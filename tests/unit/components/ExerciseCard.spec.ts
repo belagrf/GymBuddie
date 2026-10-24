@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ExerciseCard from '@/components/ExerciseCard.vue'
 import { createGymDataEnvelope, type Category, type WorkoutSession } from '@/domain/gymData'
 import { GYM_STORAGE_KEY, useGymStore } from '@/stores/gymStore'
+import { useUiStore } from '@/stores/uiStore'
 
 function sessions(count: number): WorkoutSession[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -23,12 +24,13 @@ function seed(history: WorkoutSession[] = sessions(1)): Category {
   return category
 }
 
-function mountCard() {
+function mountCard({ open = true }: { open?: boolean } = {}) {
   const store = useGymStore()
   const exercise = store.categories[0]?.exercises[0]
   if (!exercise) throw new Error('Expected exercise')
+  if (open) useUiStore().setExerciseOpen(exercise.id, true)
   return mount(ExerciseCard, {
-    props: { categoryId: 'category-1', exercise },
+    props: { categoryId: 'category-1', exercise, today: '2026-07-13' },
     attachTo: document.body,
   })
 }
@@ -58,6 +60,7 @@ describe('ExerciseCard', () => {
     wrapper = mountCard()
 
     expect(wrapper.text()).toContain('62,5 kg × 8 Wdh.')
+    expect(wrapper.text()).toContain('Zuletzt 12.07.2026: 62,5 kg × 8')
     expect(wrapper.text()).not.toContain('62.5')
   })
 
@@ -136,7 +139,9 @@ describe('ExerciseCard', () => {
     wrapper = mountCard()
 
     expect(wrapper.findAll('h6')).toHaveLength(3)
-    const showMore = wrapper.get('button.text-left.text-blue-700')
+    const showMore = wrapper
+      .findAll('button')
+      .find((button) => button.text().startsWith('Ältere Einheiten anzeigen'))!
     expect(showMore.text()).toContain('12 weitere')
 
     await showMore.trigger('click')

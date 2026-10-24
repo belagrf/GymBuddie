@@ -41,6 +41,7 @@ describe('HomeView', () => {
     await flushPromises()
     expect(document.activeElement?.id).toBe('new-exercise-name-push')
 
+    await wrapper.get('#exercise-toggle-dips').trigger('click')
     await wrapper.get('#delete-exercise-btn-dips').trigger('click')
     await wrapper
       .findAll('button')
