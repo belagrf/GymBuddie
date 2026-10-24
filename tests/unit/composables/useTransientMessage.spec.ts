@@ -34,4 +34,27 @@ describe('useTransientMessage', () => {
 
     wrapper.unmount()
   })
+
+  it('re-inserts an identical message so screen readers announce it again', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(MessageHarness)
+    const texts: string[] = []
+    const observer = new MutationObserver(() => texts.push(wrapper.get('p').text()))
+    observer.observe(wrapper.get('p').element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+
+    await wrapper.get('button').trigger('click')
+    await wrapper.get('button').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(wrapper.get('p').text()).toBe('Gespeichert.')
+    expect(texts).toContain('')
+    expect(texts.filter((text) => text === 'Gespeichert.').length).toBeGreaterThanOrEqual(2)
+
+    observer.disconnect()
+    wrapper.unmount()
+  })
 })

@@ -5,6 +5,8 @@
     min-width: 320px;
     min-height: 100%;
     background: #f8fafc;
+    /* Keeps focused controls clear of the fixed update banner at the bottom. */
+    scroll-padding-bottom: 9rem;
   }
 
   body,

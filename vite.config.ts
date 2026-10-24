@@ -5,8 +5,9 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 import tailwindcss from '@tailwindcss/vite'
 
-const repositoryName = process.env.GITHUB_REPOSITORY?.split('/').at(-1)
-const base = process.env.VITE_BASE_PATH ?? (repositoryName ? `/${repositoryName}/` : '/GymBuddie/')
+import { resolveBasePath } from './scripts/base-path'
+
+const base = resolveBasePath()
 
 export default defineConfig({
   base,
@@ -18,7 +19,8 @@ export default defineConfig({
       injectRegister: false,
       registerType: 'prompt',
       manifest: {
-        id: '.',
+        // A relative id resolves against the origin, which other Pages sites share; use the app path.
+        id: base,
         name: 'GymBuddie',
         short_name: 'GymBuddie',
         description: 'Dein persönlicher Fortschritts-Tracker für das Fitnessstudio.',
@@ -27,7 +29,6 @@ export default defineConfig({
         theme_color: '#0f172a',
         background_color: '#f8fafc',
         display: 'standalone',
-        orientation: 'portrait-primary',
         start_url: '.',
         icons: [
           {

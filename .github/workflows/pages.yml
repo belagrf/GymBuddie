@@ -6,24 +6,32 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Jobs get only what they need; pull requests never receive Pages or OIDC write tokens.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled, but a production deployment always finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
     name: Verify and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: read
+    env:
+      # Optional repository variable for custom domains or other hosts.
+      VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6.4.0
@@ -34,9 +42,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm run audit
-
       - name: Run static checks, unit tests, and production build
         run: npm run check
 
@@ -46,8 +51,21 @@ jobs:
       - name: Run browser and accessibility tests
         run: npm run test:e2e
 
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Verify generated PWA files
         run: npm run verify:pwa
+
+      # Runs after the tests so a new advisory does not hide their results; it still blocks deploys.
+      - name: Audit dependencies
+        run: npm run audit
 
       - name: Configure GitHub Pages
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -65,6 +83,9 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

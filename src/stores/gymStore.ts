@@ -1,22 +1,31 @@
 import { defineStore } from 'pinia'
-import { onScopeDispose, ref, watch } from 'vue'
+import { onScopeDispose, ref, toRaw } from 'vue'
 
 import {
   MAX_CATEGORIES,
   MAX_EXERCISES_PER_CATEGORY,
   MAX_HISTORY_ENTRIES_PER_EXERCISE,
+  MAX_NAME_LENGTH,
+  MAX_REPS,
   MAX_SETS_PER_SESSION,
+  MAX_WEIGHT_KG,
   createGymDataExport,
   createId,
   isValidSetValues,
   normalizeName,
   normalizeVideoUrl,
+  inspectRecoveryCopy,
+  parseBackupFile,
   parseGymData,
+  parseRecoveryCopy,
   serializeGymData,
   toLocalDateKey,
+  type BackupParseResult,
   type Category,
   type Exercise,
+  type GymDataSummary,
   type SetEntry,
+  type WorkoutSession,
 } from '@/domain/gymData'
 
 export type { Category, Exercise, SetEntry, WorkoutSession } from '@/domain/gymData'
@@ -33,25 +42,84 @@ export const GYM_STORAGE_KEY = 'gymbuddie:data:v2'
 export const LEGACY_STORAGE_KEY = 'gymData'
 export const LEGACY_BACKUP_KEY = 'gymbuddie:backup:gymData:v1'
 export const RECOVERY_BACKUP_KEY = 'gymbuddie:backup:invalid-data:v2'
+export const PRE_IMPORT_BACKUP_KEY = 'gymbuddie:backup:before-import:v2'
+export const LAST_EXPORT_KEY = 'gymbuddie:meta:last-export'
+
+const BACKUP_KEY_PREFIX = 'gymbuddie:backup:'
+const MAX_COPIES_PER_BACKUP = 3
 
 export type PersistenceStatus = 'ready' | 'saved' | 'synced' | 'error'
+
+/**
+ * Why writes are refused: `unpreserved-data` means stored data could not be read or fully
+ * sanitized and no recovery copy fit into storage; `newer-version` means another app
+ * version wrote a format this one does not understand.
+ */
+export type WriteBlockReason = 'unpreserved-data' | 'newer-version'
+
+export type ActionResult = { ok: true } | { ok: false; error: string }
+
+/** `not-needed` means there was no previous data on this device to keep. */
+export type SnapshotState = 'saved' | 'not-needed' | 'failed'
+
+export type ImportResult =
+  | {
+      ok: true
+      summary: GymDataSummary
+      skipped: number
+      corrections: number
+      snapshot: SnapshotState
+    }
+  | { ok: false; error: string }
+
+export interface RecoveryCopy {
+  key: string
+  label: string
+  size: number
+  /** When the copied data was exported or last saved, if known. */
+  savedAt: string | null
+  /** Whether the copy looks like training data that can be restored. */
+  restorable: boolean
+}
+
+const STORAGE_UNAVAILABLE =
+  'Lokaler Speicher ist in diesem Browser nicht verfügbar. Änderungen gehen beim Schließen verloren.'
+const NOT_FOUND =
+  'Der Eintrag wurde nicht gefunden. Möglicherweise wurde er in einem anderen Tab gelöscht.'
+const CONFLICT =
+  'In einem anderen Tab wurden die Daten geändert. Die aktuelle Version wurde geladen – bitte wiederhole die Eingabe.'
+const INVALID_NAME = `Gib einen Namen mit höchstens ${MAX_NAME_LENGTH} Zeichen ein.`
+const INVALID_URL = 'Der Link muss eine gültige HTTP- oder HTTPS-Adresse sein.'
+const INVALID_SET = `Gib ein Gewicht von 0 bis ${MAX_WEIGHT_KG.toLocaleString('de-DE')} kg und ganze Wiederholungen von 1 bis ${MAX_REPS.toLocaleString('de-DE')} ein.`
+
+export function writeBlockMessage(reason: WriteBlockReason): string {
+  return reason === 'newer-version'
+    ? 'Deine Daten wurden mit einer neueren GymBuddie-Version gespeichert. Bitte lade die App neu, damit sie sich aktualisiert. Bis dahin werden keine Änderungen gespeichert.'
+    : 'Gespeicherte Daten konnten nicht gelesen werden, und für eine Sicherungskopie war kein Platz. Lade die Rohdaten hier über „Rohdaten herunterladen“ herunter oder verwirf sie – bis dahin werden keine Änderungen gespeichert. „Backup exportieren“ enthält die unlesbaren Daten nicht.'
+}
 
 interface InitialData {
   categories: Category[]
   status: PersistenceStatus
   error: string | null
   storage: Storage | null
+  knownRaw: string | null
+  writeBlock: WriteBlockReason | null
+}
+
+function isQuotaError(error: unknown): boolean {
+  return (
+    typeof DOMException !== 'undefined' &&
+    error instanceof DOMException &&
+    (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+  )
 }
 
 function errorMessage(error: unknown): string {
-  if (
-    typeof DOMException !== 'undefined' &&
-    error instanceof DOMException &&
-    error.name === 'QuotaExceededError'
-  ) {
-    return 'Der Gerätespeicher ist voll. Bitte exportiere deine Daten, bevor du fortfährst.'
+  if (isQuotaError(error)) {
+    return 'Der Gerätespeicher ist voll. Exportiere ein Backup und lösche nicht mehr benötigte Wiederherstellungskopien unter „Daten sichern“.'
   }
-  return 'Die Trainingsdaten konnten auf diesem Gerät nicht gespeichert werden.'
+  return 'Die Änderung konnte auf diesem Gerät nicht gespeichert werden.'
 }
 
 function browserStorage(): Storage | null {
@@ -63,12 +131,105 @@ function browserStorage(): Storage | null {
   }
 }
 
-function preserveRawBackup(storage: Storage, key: string, rawData: string): boolean {
+function backupSlots(baseKey: string): string[] {
+  return Array.from({ length: MAX_COPIES_PER_BACKUP }, (_, index) =>
+    index === 0 ? baseKey : `${baseKey}:${index + 1}`,
+  )
+}
+
+/**
+ * Stores an exact raw payload in the first free slot of a bounded backup family. Returns
+ * true only if this payload is now preserved, either freshly written or already present.
+ */
+function preserveRawBackup(storage: Storage, baseKey: string, rawData: string): boolean {
   try {
-    if (storage.getItem(key) === null) storage.setItem(key, rawData)
-    return true
+    for (const key of backupSlots(baseKey)) {
+      const existing = storage.getItem(key)
+      if (existing === rawData) return true
+      if (existing === null) {
+        storage.setItem(key, rawData)
+        return true
+      }
+    }
   } catch {
-    return false
+    // Treated as "not preserved" below.
+  }
+  return false
+}
+
+function describeBackupKey(key: string): string {
+  const match = /^(.*?)(?::(\d+))?$/.exec(key)
+  const baseKey = match?.[1] ?? key
+  const suffix = match?.[2] ? ` (${match[2]})` : ''
+
+  switch (baseKey) {
+    case LEGACY_BACKUP_KEY:
+      return `Originaldaten vor der Umstellung auf das neue Speicherformat${suffix}`
+    case RECOVERY_BACKUP_KEY:
+      return `Unveränderte Kopie beschädigter oder bereinigter Daten${suffix}`
+    case PRE_IMPORT_BACKUP_KEY:
+      return `Datenstand vor dem letzten Import${suffix}`
+    default:
+      return `Sicherungskopie${suffix}`
+  }
+}
+
+function loadLegacyData(
+  storage: Storage,
+  legacyRaw: string,
+  currentRaw: string | null,
+  replacesCorruptData: boolean,
+): InitialData {
+  const parsed = parseGymData(legacyRaw)
+  if (!parsed.ok) {
+    return {
+      categories: [],
+      status: 'error',
+      error: `Alte Trainingsdaten konnten nicht geladen werden: ${parsed.error} Sie bleiben unverändert gespeichert.`,
+      storage,
+      knownRaw: currentRaw,
+      writeBlock: null,
+    }
+  }
+
+  // The backup is the exact original string, not a re-serialized approximation.
+  const backupSaved = preserveRawBackup(storage, LEGACY_BACKUP_KEY, legacyRaw)
+  const serialized = serializeGymData(parsed.categories)
+  let knownRaw = currentRaw
+  let error: string | null = null
+
+  try {
+    storage.setItem(GYM_STORAGE_KEY, serialized)
+    knownRaw = serialized
+  } catch (storageError) {
+    error = `Die alten Trainingsdaten wurden geladen, konnten aber nicht im neuen Format gespeichert werden. ${errorMessage(storageError)}`
+  }
+
+  // Only remove the collision-prone old key once both the backup and new copy exist.
+  if (backupSaved && error === null) {
+    try {
+      storage.removeItem(LEGACY_STORAGE_KEY)
+    } catch {
+      // Keeping the old key is safe; the versioned key wins on the next load.
+    }
+  }
+
+  if (error === null && replacesCorruptData) {
+    error =
+      'Die aktuellen Daten waren beschädigt und wurden als Wiederherstellungskopie gesichert. Es wurde der ältere Datenstand wiederhergestellt – bitte prüfe deine Daten.'
+  } else if (error === null && parsed.issues.length > 0) {
+    error = backupSaved
+      ? 'Einige beschädigte alte Einträge wurden übersprungen. Das unveränderte Original findest du unter „Daten sichern“.'
+      : 'Einige beschädigte alte Einträge wurden übersprungen. Das Original bleibt unter dem alten Speicherschlüssel erhalten, konnte aber nicht zusätzlich gesichert werden.'
+  }
+
+  return {
+    categories: parsed.categories,
+    status: error === null ? 'saved' : 'error',
+    error,
+    storage,
+    knownRaw,
+    writeBlock: null,
   }
 }
 
@@ -78,8 +239,10 @@ function loadInitialData(): InitialData {
     return {
       categories: [],
       status: 'error',
-      error: 'Lokaler Speicher ist in diesem Browser nicht verfügbar.',
+      error: STORAGE_UNAVAILABLE,
       storage: null,
+      knownRaw: null,
+      writeBlock: null,
     }
   }
 
@@ -88,104 +251,122 @@ function loadInitialData(): InitialData {
   try {
     currentRaw = storage.getItem(GYM_STORAGE_KEY)
     legacyRaw = storage.getItem(LEGACY_STORAGE_KEY)
-  } catch (error) {
-    return { categories: [], status: 'error', error: errorMessage(error), storage }
-  }
-
-  if (currentRaw !== null) {
-    const parsed = parseGymData(currentRaw)
-    if (parsed.ok) {
-      let status: PersistenceStatus = 'ready'
-      let error: string | null = null
-
-      if (parsed.needsRewrite) {
-        const backupSaved = preserveRawBackup(storage, RECOVERY_BACKUP_KEY, currentRaw)
-        try {
-          storage.setItem(GYM_STORAGE_KEY, serializeGymData(parsed.categories))
-          status = 'saved'
-        } catch (storageError) {
-          status = 'error'
-          error = errorMessage(storageError)
-        }
-
-        if (!backupSaved && error === null) {
-          status = 'error'
-          error =
-            'Die bereinigten Daten wurden gespeichert, aber die ursprüngliche Datei konnte nicht gesichert werden.'
-        }
-      }
-
-      if (parsed.issues.length > 0 && error === null) {
-        status = 'error'
-        error =
-          'Einige beschädigte gespeicherte Einträge wurden sicher übersprungen. Bitte exportiere und prüfe deine Daten.'
-      }
-
-      return { categories: parsed.categories, status, error, storage }
-    }
-
-    // Keep the exact corrupt payload before attempting a legacy recovery.
-    preserveRawBackup(storage, RECOVERY_BACKUP_KEY, currentRaw)
-    if (legacyRaw === null) {
-      return {
-        categories: [],
-        status: 'error',
-        error: `Gespeicherte Trainingsdaten konnten nicht geladen werden: ${parsed.error}`,
-        storage,
-      }
+  } catch {
+    return {
+      categories: [],
+      status: 'error',
+      error:
+        'Der Browser verweigert den Zugriff auf den lokalen Speicher. Gespeicherte Daten konnten nicht gelesen werden.',
+      storage,
+      knownRaw: null,
+      writeBlock: null,
     }
   }
 
-  if (legacyRaw !== null) {
-    const parsed = parseGymData(legacyRaw)
-    if (!parsed.ok) {
+  if (currentRaw === null) {
+    if (legacyRaw !== null) return loadLegacyData(storage, legacyRaw, null, false)
+    return {
+      categories: [],
+      status: 'ready',
+      error: null,
+      storage,
+      knownRaw: null,
+      writeBlock: null,
+    }
+  }
+
+  const parsed = parseGymData(currentRaw)
+
+  if (!parsed.ok) {
+    if (parsed.reason === 'unsupported-version') {
+      // Never fall back to older data or overwrite a format written by a newer version.
       return {
         categories: [],
         status: 'error',
-        error: `Alte Trainingsdaten konnten nicht geladen werden: ${parsed.error}`,
+        error: parsed.error,
         storage,
+        knownRaw: currentRaw,
+        writeBlock: 'newer-version',
       }
     }
 
-    // The backup is the exact original string, not a re-serialized approximation.
-    const backupSaved = preserveRawBackup(storage, LEGACY_BACKUP_KEY, legacyRaw)
-    let dataSaved = false
-    let saveError: string | null = null
-    try {
-      storage.setItem(GYM_STORAGE_KEY, serializeGymData(parsed.categories))
-      dataSaved = true
-    } catch (error) {
-      saveError = errorMessage(error)
-    }
-
-    // Only remove the collision-prone old key once both the backup and new copy exist.
-    if (backupSaved && dataSaved) {
-      try {
-        storage.removeItem(LEGACY_STORAGE_KEY)
-      } catch {
-        // Keeping the old key is safe; the versioned key wins on the next load.
-      }
-    }
-
+    // Keep the exact unreadable payload before anything can replace it.
+    const backupSaved = preserveRawBackup(storage, RECOVERY_BACKUP_KEY, currentRaw)
     if (!backupSaved) {
-      saveError =
-        'Die alten Trainingsdaten wurden geladen, konnten aber nicht zusätzlich gesichert werden.'
+      return {
+        categories: [],
+        status: 'error',
+        error: `Gespeicherte Trainingsdaten konnten nicht gelesen werden: ${parsed.error}`,
+        storage,
+        knownRaw: currentRaw,
+        writeBlock: 'unpreserved-data',
+      }
     }
-    if (parsed.issues.length > 0 && saveError === null) {
-      saveError =
-        'Einige beschädigte alte Einträge wurden übersprungen. Die unveränderte Originaldatei wurde gesichert.'
-    }
+    if (legacyRaw !== null) return loadLegacyData(storage, legacyRaw, currentRaw, true)
 
     return {
-      categories: parsed.categories,
-      status: saveError === null ? 'saved' : 'error',
-      error: saveError,
+      categories: [],
+      status: 'error',
+      error: `Gespeicherte Trainingsdaten konnten nicht gelesen werden: ${parsed.error} Eine unveränderte Kopie findest du unter „Daten sichern“.`,
       storage,
+      knownRaw: currentRaw,
+      writeBlock: null,
     }
   }
 
-  return { categories: [], status: 'ready', error: null, storage }
+  if (!parsed.needsRewrite) {
+    return {
+      categories: parsed.categories,
+      status: 'ready',
+      error: null,
+      storage,
+      knownRaw: currentRaw,
+      writeBlock: null,
+    }
+  }
+
+  const backupSaved = preserveRawBackup(storage, RECOVERY_BACKUP_KEY, currentRaw)
+  if (!backupSaved && parsed.issues.length > 0) {
+    // Rewriting would drop the skipped entries for good, so keep the original untouched.
+    return {
+      categories: parsed.categories,
+      status: 'error',
+      error:
+        'Einige gespeicherte Einträge sind beschädigt und wurden ausgeblendet. Für eine Sicherungskopie war kein Platz.',
+      storage,
+      knownRaw: currentRaw,
+      writeBlock: 'unpreserved-data',
+    }
+  }
+
+  const serialized = serializeGymData(parsed.categories)
+  try {
+    storage.setItem(GYM_STORAGE_KEY, serialized)
+  } catch (error) {
+    return {
+      categories: parsed.categories,
+      status: 'error',
+      error: errorMessage(error),
+      storage,
+      knownRaw: currentRaw,
+      writeBlock: null,
+    }
+  }
+
+  return {
+    categories: parsed.categories,
+    status: parsed.issues.length > 0 ? 'error' : 'saved',
+    error:
+      parsed.issues.length > 0
+        ? 'Einige beschädigte gespeicherte Einträge wurden übersprungen. Das unveränderte Original findest du unter „Daten sichern“.'
+        : null,
+    storage,
+    knownRaw: serialized,
+    writeBlock: null,
+  }
 }
+
+type WriteResult = { ok: true } | { ok: false; error: string; external?: string | null }
 
 export const useGymStore = defineStore('gym', () => {
   const initial = loadInitialData()
@@ -195,36 +376,205 @@ export const useGymStore = defineStore('gym', () => {
   const lastSavedAt = ref<string | null>(
     initial.status === 'saved' ? new Date().toISOString() : null,
   )
+  const writeBlock = ref<WriteBlockReason | null>(initial.writeBlock)
+  const recoveryCopies = ref<RecoveryCopy[]>([])
+  const lastExportAt = ref<string | null>(null)
+  const storagePersisted = ref<boolean | null>(null)
   const storage = initial.storage
 
-  let ignoredExternalFingerprint: string | null = null
+  // The exact string this tab last read or wrote; anything else in storage came from another tab.
+  let knownRaw = initial.knownRaw
+  const storedSize = ref(knownRaw?.length ?? 0)
 
-  function setPersistenceError(message: string) {
-    persistenceStatus.value = 'error'
-    persistenceError.value = message
+  function setKnownRaw(raw: string | null) {
+    knownRaw = raw
+    storedSize.value = raw?.length ?? 0
   }
+  let persistenceRequested = false
 
-  function clearPersistenceError() {
-    persistenceError.value = null
-    if (persistenceStatus.value === 'error') persistenceStatus.value = 'ready'
-  }
-
-  function persist(data: Category[]): boolean {
-    if (!storage) {
-      setPersistenceError('Lokaler Speicher ist in diesem Browser nicht verfügbar.')
-      return false
+  function refreshRecoveryCopies() {
+    const copies: RecoveryCopy[] = []
+    if (storage) {
+      try {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index)
+          if (!key?.startsWith(BACKUP_KEY_PREFIX)) continue
+          const value = storage.getItem(key)
+          if (value === null) continue
+          copies.push({
+            key,
+            label: describeBackupKey(key),
+            size: value.length,
+            ...inspectRecoveryCopy(value),
+          })
+        }
+      } catch {
+        // Listing is best effort; the copies stay in storage either way.
+      }
     }
+    recoveryCopies.value = copies.sort((a, b) => a.key.localeCompare(b.key))
+  }
+
+  function refreshLastExport() {
+    try {
+      lastExportAt.value = storage?.getItem(LAST_EXPORT_KEY) ?? null
+    } catch {
+      lastExportAt.value = null
+    }
+  }
+
+  function storageManager(): StorageManager | undefined {
+    return typeof navigator === 'undefined' ? undefined : navigator.storage
+  }
+
+  async function checkPersistentStorage() {
+    const manager = storageManager()
+    if (typeof manager?.persisted !== 'function') return
+    try {
+      storagePersisted.value = await manager.persisted()
+    } catch {
+      storagePersisted.value = null
+    }
+  }
+
+  /**
+   * Asks the browser to exempt GymBuddie's storage from automatic eviction. Called after
+   * the first successful save so Firefox's permission prompt follows a user action.
+   */
+  async function requestPersistentStorage() {
+    if (persistenceRequested) return
+    persistenceRequested = true
+    const manager = storageManager()
+    if (typeof manager?.persist !== 'function' || typeof manager.persisted !== 'function') return
+    try {
+      if (await manager.persisted()) {
+        storagePersisted.value = true
+        return
+      }
+      storagePersisted.value = await manager.persist()
+    } catch {
+      // Not supported in this context; the status simply stays unknown.
+    }
+  }
+
+  function applyExternal(raw: string | null) {
+    if (raw === null) {
+      setKnownRaw(null)
+      // GymBuddie never removes its own data, so this is a wipe (cleared site data, eviction,
+      // another page on this origin). This tab now holds the only copy: save it again.
+      if (categories.value.length > 0 && writeBlock.value === null) {
+        const saved = write()
+        persistenceStatus.value = saved.ok ? 'saved' : 'error'
+        persistenceError.value = saved.ok
+          ? 'Die gespeicherten Daten wurden außerhalb von GymBuddie gelöscht und aus diesem Tab wiederhergestellt. Exportiere zur Sicherheit ein Backup.'
+          : `Die gespeicherten Daten wurden außerhalb von GymBuddie gelöscht und konnten nicht wiederhergestellt werden. Exportiere sofort ein Backup. ${saved.error}`
+        return
+      }
+      categories.value = []
+      persistenceStatus.value = 'synced'
+      return
+    }
+
+    setKnownRaw(raw)
+    const parsed = parseGymData(raw)
+    if (!parsed.ok) {
+      persistenceStatus.value = 'error'
+      if (parsed.reason === 'unsupported-version') {
+        writeBlock.value = 'newer-version'
+        persistenceError.value = parsed.error
+        return
+      }
+      const preserved = storage ? preserveRawBackup(storage, RECOVERY_BACKUP_KEY, raw) : false
+      refreshRecoveryCopies()
+      if (!preserved) writeBlock.value = 'unpreserved-data'
+      persistenceError.value = `Änderungen aus einem anderen Tab konnten nicht geladen werden: ${parsed.error}`
+      return
+    }
+
+    // The next save would drop skipped entries for good, so keep the original first.
+    if (parsed.issues.length > 0) {
+      const preserved = storage ? preserveRawBackup(storage, RECOVERY_BACKUP_KEY, raw) : false
+      refreshRecoveryCopies()
+      if (!preserved) writeBlock.value = 'unpreserved-data'
+    } else if (writeBlock.value === 'unpreserved-data') {
+      // Another tab replaced the protected payload with valid data; nothing is left to protect.
+      writeBlock.value = null
+    }
+
+    categories.value = parsed.categories
+    persistenceStatus.value = parsed.issues.length > 0 ? 'error' : 'synced'
+    persistenceError.value =
+      parsed.issues.length > 0
+        ? 'Einige ungültige Änderungen aus einem anderen Tab wurden ausgeblendet. Das Original findest du unter „Daten sichern“.'
+        : null
+  }
+
+  function syncFromStorage() {
+    if (!storage) return
+    let raw: string | null
+    try {
+      raw = storage.getItem(GYM_STORAGE_KEY)
+    } catch {
+      return
+    }
+    if (raw !== knownRaw) applyExternal(raw)
+  }
+
+  function write(): WriteResult {
+    if (writeBlock.value) return { ok: false, error: writeBlockMessage(writeBlock.value) }
+    if (!storage) return { ok: false, error: STORAGE_UNAVAILABLE }
 
     try {
-      storage.setItem(GYM_STORAGE_KEY, serializeGymData(data))
-      persistenceStatus.value = 'saved'
-      persistenceError.value = null
-      lastSavedAt.value = new Date().toISOString()
-      return true
+      const current = storage.getItem(GYM_STORAGE_KEY)
+      if (current !== knownRaw) return { ok: false, error: CONFLICT, external: current }
+
+      const serialized = serializeGymData(toRaw(categories.value))
+      try {
+        storage.setItem(GYM_STORAGE_KEY, serialized)
+      } catch (error) {
+        // The pre-import snapshot is the most expendable copy; give its space to the live data.
+        const snapshot = isQuotaError(error) ? storage.getItem(PRE_IMPORT_BACKUP_KEY) : null
+        if (snapshot === null) throw error
+        storage.removeItem(PRE_IMPORT_BACKUP_KEY)
+        try {
+          storage.setItem(GYM_STORAGE_KEY, serialized)
+        } catch (retryError) {
+          // Still too big: put the snapshot back, its space is free again.
+          storage.setItem(PRE_IMPORT_BACKUP_KEY, snapshot)
+          throw retryError
+        } finally {
+          refreshRecoveryCopies()
+        }
+        persistenceError.value =
+          'Der Speicher war voll. Die Kopie des Datenstands vor dem letzten Import wurde gelöscht, um deine Änderung zu speichern.'
+      }
+      setKnownRaw(serialized)
     } catch (error) {
-      setPersistenceError(errorMessage(error))
-      return false
+      return { ok: false, error: errorMessage(error) }
     }
+
+    persistenceStatus.value = 'saved'
+    lastSavedAt.value = new Date().toISOString()
+    void requestPersistentStorage()
+    return { ok: true }
+  }
+
+  /** Persists the in-memory change right away and reverts it if the write fails. */
+  function commit(undo: () => void): ActionResult {
+    const result = write()
+    if (result.ok) return result
+
+    undo()
+    if (result.external !== undefined) applyExternal(result.external)
+    return { ok: false, error: result.error }
+  }
+
+  function fail(error: string): ActionResult {
+    return { ok: false, error }
+  }
+
+  function findCategory(categoryId: string): Category | undefined {
+    return categories.value.find((category) => category.id === categoryId)
   }
 
   function findExercise(exerciseId: string): Exercise | undefined {
@@ -235,82 +585,146 @@ export const useGymStore = defineStore('gym', () => {
     return undefined
   }
 
-  function logSet(exerciseId: string, newSet: Omit<SetEntry, 'id'>): boolean {
-    if (!isValidSetValues(newSet.weight, newSet.reps)) return false
+  function logSet(exerciseId: string, newSet: Omit<SetEntry, 'id'>): ActionResult {
+    if (!isValidSetValues(newSet.weight, newSet.reps)) return fail(INVALID_SET)
     const exercise = findExercise(exerciseId)
-    if (!exercise) return false
+    if (!exercise) return fail(NOT_FOUND)
 
     const today = toLocalDateKey()
+    const set: SetEntry = { id: createId(), weight: newSet.weight, reps: newSet.reps }
     const todaySession = exercise.history.find((session) => session.date === today)
 
     if (todaySession) {
-      if (todaySession.sets.length >= MAX_SETS_PER_SESSION) return false
-      todaySession.sets.unshift({ ...newSet, id: createId() })
-    } else {
-      if (exercise.history.length >= MAX_HISTORY_ENTRIES_PER_EXERCISE) return false
-      exercise.history.unshift({ date: today, sets: [{ ...newSet, id: createId() }] })
+      if (todaySession.sets.length >= MAX_SETS_PER_SESSION) {
+        return fail(`Pro Tag sind höchstens ${MAX_SETS_PER_SESSION} Sätze je Übung möglich.`)
+      }
+      todaySession.sets.unshift(set)
+      return commit(() => {
+        const index = todaySession.sets.findIndex((candidate) => candidate.id === set.id)
+        if (index >= 0) todaySession.sets.splice(index, 1)
+      })
     }
-    return true
-  }
 
-  function addCategory(name: string): boolean {
-    const normalizedName = normalizeName(name)
-    if (!normalizedName || categories.value.length >= MAX_CATEGORIES) return false
-
-    categories.value.unshift({
-      id: createId(),
-      name: normalizedName,
-      exercises: [],
+    if (exercise.history.length >= MAX_HISTORY_ENTRIES_PER_EXERCISE) {
+      return fail('Für diese Übung ist das Limit an Trainingstagen erreicht.')
+    }
+    // Keep the newest-first order even if the device clock moved backwards.
+    const insertAt = exercise.history.findIndex((session) => session.date < today)
+    exercise.history.splice(insertAt < 0 ? exercise.history.length : insertAt, 0, {
+      date: today,
+      sets: [set],
     })
-    return true
+    return commit(() => {
+      const index = exercise.history.findIndex((session) => session.date === today)
+      if (index >= 0) exercise.history.splice(index, 1)
+    })
   }
 
-  function deleteCategory(categoryId: string): boolean {
-    const index = categories.value.findIndex((category) => category.id === categoryId)
-    if (index < 0) return false
-    categories.value.splice(index, 1)
-    return true
-  }
-
-  function addExercise(categoryId: string, exerciseName: string, videoUrl?: string): boolean {
-    const category = categories.value.find((candidate) => candidate.id === categoryId)
-    const normalizedName = normalizeName(exerciseName)
-    const normalizedVideoUrl = normalizeVideoUrl(videoUrl)
-    if (
-      !category ||
-      !normalizedName ||
-      normalizedVideoUrl === null ||
-      category.exercises.length >= MAX_EXERCISES_PER_CATEGORY
-    ) {
-      return false
+  function addCategory(name: string): ActionResult {
+    const normalizedName = normalizeName(name)
+    if (!normalizedName) return fail(INVALID_NAME)
+    if (categories.value.length >= MAX_CATEGORIES) {
+      return fail(`Es sind höchstens ${MAX_CATEGORIES} Kategorien möglich.`)
     }
 
-    category.exercises.unshift({
+    const category: Category = { id: createId(), name: normalizedName, exercises: [] }
+    categories.value.unshift(category)
+    return commit(() => {
+      const index = categories.value.findIndex((candidate) => candidate.id === category.id)
+      if (index >= 0) categories.value.splice(index, 1)
+    })
+  }
+
+  function renameCategory(categoryId: string, name: string): ActionResult {
+    const normalizedName = normalizeName(name)
+    if (!normalizedName) return fail(INVALID_NAME)
+    const category = findCategory(categoryId)
+    if (!category) return fail(NOT_FOUND)
+
+    const previousName = category.name
+    category.name = normalizedName
+    return commit(() => {
+      category.name = previousName
+    })
+  }
+
+  function deleteCategory(categoryId: string): ActionResult {
+    const index = categories.value.findIndex((category) => category.id === categoryId)
+    if (index < 0) return fail(NOT_FOUND)
+
+    const [removed] = categories.value.splice(index, 1)
+    return commit(() => {
+      if (removed) categories.value.splice(index, 0, removed)
+    })
+  }
+
+  function addExercise(categoryId: string, exerciseName: string, videoUrl?: string): ActionResult {
+    const normalizedName = normalizeName(exerciseName)
+    if (!normalizedName) return fail(INVALID_NAME)
+    const normalizedVideoUrl = normalizeVideoUrl(videoUrl)
+    if (normalizedVideoUrl === null) return fail(INVALID_URL)
+    const category = findCategory(categoryId)
+    if (!category) return fail(NOT_FOUND)
+    if (category.exercises.length >= MAX_EXERCISES_PER_CATEGORY) {
+      return fail(`Pro Kategorie sind höchstens ${MAX_EXERCISES_PER_CATEGORY} Übungen möglich.`)
+    }
+
+    const exercise: Exercise = {
       id: createId(),
       name: normalizedName,
       ...(normalizedVideoUrl ? { videoUrl: normalizedVideoUrl } : {}),
       history: [],
+    }
+    category.exercises.unshift(exercise)
+    return commit(() => {
+      const index = category.exercises.findIndex((candidate) => candidate.id === exercise.id)
+      if (index >= 0) category.exercises.splice(index, 1)
     })
-    return true
   }
 
-  function deleteExercise(categoryId: string, exerciseId: string): boolean {
-    const category = categories.value.find((candidate) => candidate.id === categoryId)
-    if (!category) return false
+  function updateExercise(
+    exerciseId: string,
+    updates: { name: string; videoUrl?: string },
+  ): ActionResult {
+    const normalizedName = normalizeName(updates.name)
+    if (!normalizedName) return fail(INVALID_NAME)
+    const normalizedVideoUrl = normalizeVideoUrl(updates.videoUrl)
+    if (normalizedVideoUrl === null) return fail(INVALID_URL)
+    const exercise = findExercise(exerciseId)
+    if (!exercise) return fail(NOT_FOUND)
+
+    const previous = { name: exercise.name, videoUrl: exercise.videoUrl }
+    exercise.name = normalizedName
+    if (normalizedVideoUrl) exercise.videoUrl = normalizedVideoUrl
+    else delete exercise.videoUrl
+
+    return commit(() => {
+      exercise.name = previous.name
+      if (previous.videoUrl) exercise.videoUrl = previous.videoUrl
+      else delete exercise.videoUrl
+    })
+  }
+
+  function deleteExercise(categoryId: string, exerciseId: string): ActionResult {
+    const category = findCategory(categoryId)
+    if (!category) return fail(NOT_FOUND)
     const index = category.exercises.findIndex((exercise) => exercise.id === exerciseId)
-    if (index < 0) return false
-    category.exercises.splice(index, 1)
-    return true
+    if (index < 0) return fail(NOT_FOUND)
+
+    const [removed] = category.exercises.splice(index, 1)
+    return commit(() => {
+      if (removed) category.exercises.splice(index, 0, removed)
+    })
   }
 
   function updateSet(
     exerciseId: string,
     setId: string,
     updates: { weight?: number; reps?: number },
-  ): boolean {
-    if (updates.weight === undefined && updates.reps === undefined) return false
+  ): ActionResult {
+    if (updates.weight === undefined && updates.reps === undefined) return fail(INVALID_SET)
     const exercise = findExercise(exerciseId)
-    if (!exercise) return false
+    if (!exercise) return fail(NOT_FOUND)
 
     for (const session of exercise.history) {
       const set = session.sets.find((candidate) => candidate.id === setId)
@@ -318,102 +732,207 @@ export const useGymStore = defineStore('gym', () => {
 
       const weight = updates.weight ?? set.weight
       const reps = updates.reps ?? set.reps
-      if (!isValidSetValues(weight, reps)) return false
+      if (!isValidSetValues(weight, reps)) return fail(INVALID_SET)
+
+      const previous = { weight: set.weight, reps: set.reps }
       set.weight = weight
       set.reps = reps
-      return true
+      return commit(() => {
+        set.weight = previous.weight
+        set.reps = previous.reps
+      })
     }
-    return false
+    return fail(NOT_FOUND)
   }
 
-  function deleteSet(exerciseId: string, setId: string): boolean {
+  function deleteSet(exerciseId: string, setId: string): ActionResult {
     const exercise = findExercise(exerciseId)
-    if (!exercise) return false
+    if (!exercise) return fail(NOT_FOUND)
 
     for (let sessionIndex = 0; sessionIndex < exercise.history.length; sessionIndex += 1) {
-      const session = exercise.history[sessionIndex]
+      const session: WorkoutSession | undefined = exercise.history[sessionIndex]
       if (!session) continue
       const setIndex = session.sets.findIndex((set) => set.id === setId)
       if (setIndex < 0) continue
 
-      session.sets.splice(setIndex, 1)
-      if (session.sets.length === 0) exercise.history.splice(sessionIndex, 1)
-      return true
+      const [removedSet] = session.sets.splice(setIndex, 1)
+      const sessionRemoved = session.sets.length === 0
+      if (sessionRemoved) exercise.history.splice(sessionIndex, 1)
+
+      return commit(() => {
+        if (sessionRemoved) exercise.history.splice(sessionIndex, 0, session)
+        if (removedSet) session.sets.splice(setIndex, 0, removedSet)
+      })
     }
-    return false
+    return fail(NOT_FOUND)
   }
 
   function exportData(): string {
-    return JSON.stringify(createGymDataExport(categories.value), null, 2)
+    return JSON.stringify(createGymDataExport(toRaw(categories.value)))
   }
 
-  function importData(serialized: string): boolean {
-    const parsed = parseGymData(serialized)
-    if (!parsed.ok) {
-      setPersistenceError(`Import fehlgeschlagen: ${parsed.error}`)
+  function markExported() {
+    const now = new Date().toISOString()
+    lastExportAt.value = now
+    try {
+      storage?.setItem(LAST_EXPORT_KEY, now)
+    } catch {
+      // Only a reminder; the backup itself was already handed to the browser.
+    }
+  }
+
+  function previewBackup(serialized: string): BackupParseResult {
+    return parseBackupFile(serialized)
+  }
+
+  function previewRecoveryCopy(key: string): BackupParseResult {
+    const contents = readRecoveryCopy(key)
+    if (contents === null) return { ok: false, error: 'Die Kopie konnte nicht gelesen werden.' }
+    return parseRecoveryCopy(contents)
+  }
+
+  /** Replaces all data after keeping the current state as the "before last import" copy. */
+  function replaceAll(parsed: BackupParseResult): ImportResult {
+    if (!parsed.ok) return { ok: false, error: `Import fehlgeschlagen: ${parsed.error}` }
+    if (writeBlock.value === 'newer-version') {
+      return { ok: false, error: writeBlockMessage('newer-version') }
+    }
+    if (!storage) return { ok: false, error: STORAGE_UNAVAILABLE }
+
+    let current: string | null
+    let previousSnapshot: string | null
+    try {
+      current = storage.getItem(GYM_STORAGE_KEY)
+      previousSnapshot = storage.getItem(PRE_IMPORT_BACKUP_KEY)
+    } catch {
+      // Never replace data that could not even be read.
+      return {
+        ok: false,
+        error: 'Import fehlgeschlagen: Der lokale Speicher kann nicht gelesen werden.',
+      }
+    }
+
+    let snapshot: SnapshotState = 'not-needed'
+    if (current !== null) {
+      try {
+        storage.setItem(PRE_IMPORT_BACKUP_KEY, current)
+        snapshot = 'saved'
+      } catch {
+        snapshot = 'failed'
+      }
+    }
+    if (writeBlock.value === 'unpreserved-data' && snapshot === 'failed') {
+      return { ok: false, error: writeBlockMessage('unpreserved-data') }
+    }
+
+    const serializedData = serializeGymData(parsed.categories)
+    try {
+      storage.setItem(GYM_STORAGE_KEY, serializedData)
+    } catch (error) {
+      // The import did not happen, so the previous snapshot is still the right one.
+      try {
+        if (snapshot === 'saved') {
+          if (previousSnapshot === null) storage.removeItem(PRE_IMPORT_BACKUP_KEY)
+          else storage.setItem(PRE_IMPORT_BACKUP_KEY, previousSnapshot)
+        }
+      } catch {
+        // Best effort; the live data is unchanged either way.
+      }
+      refreshRecoveryCopies()
+      return { ok: false, error: `Import fehlgeschlagen: ${errorMessage(error)}` }
+    }
+
+    setKnownRaw(serializedData)
+    categories.value = parsed.categories
+    writeBlock.value = null
+    persistenceStatus.value = 'saved'
+    persistenceError.value = null
+    lastSavedAt.value = new Date().toISOString()
+    refreshRecoveryCopies()
+    void requestPersistentStorage()
+    return {
+      ok: true,
+      summary: parsed.summary,
+      skipped: parsed.skipped,
+      corrections: parsed.issues.length,
+      snapshot,
+    }
+  }
+
+  function importBackup(serialized: string): ImportResult {
+    return replaceAll(parseBackupFile(serialized))
+  }
+
+  function restoreRecoveryCopy(key: string): ImportResult {
+    return replaceAll(previewRecoveryCopy(key))
+  }
+
+  function readRecoveryCopy(key: string): string | null {
+    if (!storage || !key.startsWith(BACKUP_KEY_PREFIX)) return null
+    try {
+      return storage.getItem(key)
+    } catch {
+      return null
+    }
+  }
+
+  function deleteRecoveryCopy(key: string): boolean {
+    if (!storage || !key.startsWith(BACKUP_KEY_PREFIX)) return false
+    try {
+      storage.removeItem(key)
+    } catch {
       return false
     }
-
-    // Keep the current in-memory data intact unless the replacement is durable.
-    if (!persist(parsed.categories)) return false
-
-    const fingerprint = JSON.stringify(parsed.categories)
-    ignoredExternalFingerprint = fingerprint
-    categories.value = parsed.categories
-    if (parsed.issues.length > 0) {
-      setPersistenceError(
-        'Der Import wurde abgeschlossen; einige ungültige Einträge wurden übersprungen.',
-      )
-    }
+    refreshRecoveryCopies()
     return true
   }
 
-  watch(
-    categories,
-    (newData) => {
-      const fingerprint = JSON.stringify(newData)
-      if (fingerprint === ignoredExternalFingerprint) {
-        ignoredExternalFingerprint = null
-        return
-      }
-      ignoredExternalFingerprint = null
-      persist(newData)
-    },
-    { deep: true },
-  )
+  /** The exact unreadable payload that is currently protected by a write block. */
+  function readUnreadableData(): string | null {
+    try {
+      return storage?.getItem(GYM_STORAGE_KEY) ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** Lifts an `unpreserved-data` block once the user downloaded or chose to discard the data. */
+  function releaseWriteBlock() {
+    if (writeBlock.value !== 'unpreserved-data') return
+    writeBlock.value = null
+    persistenceError.value = null
+    persistenceStatus.value = 'ready'
+  }
+
+  function clearPersistenceError() {
+    persistenceError.value = null
+    if (persistenceStatus.value === 'error') persistenceStatus.value = 'ready'
+  }
+
+  refreshRecoveryCopies()
+  refreshLastExport()
+  void checkPersistentStorage()
 
   if (typeof window !== 'undefined' && storage) {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== GYM_STORAGE_KEY) return
       if (event.storageArea && event.storageArea !== storage) return
-
-      if (event.newValue === null) {
-        ignoredExternalFingerprint = JSON.stringify([])
-        categories.value = []
-        persistenceStatus.value = 'synced'
-        persistenceError.value = null
-        return
-      }
-
-      const parsed = parseGymData(event.newValue)
-      if (!parsed.ok) {
-        setPersistenceError(
-          `Änderungen aus einem anderen Tab konnten nicht geladen werden: ${parsed.error}`,
-        )
-        return
-      }
-
-      ignoredExternalFingerprint = JSON.stringify(parsed.categories)
-      categories.value = parsed.categories
-      persistenceStatus.value = 'synced'
-      persistenceError.value =
-        parsed.issues.length > 0
-          ? 'Einige ungültige Änderungen aus einem anderen Tab wurden übersprungen.'
-          : null
+      if (event.key === null || event.key.startsWith(BACKUP_KEY_PREFIX)) refreshRecoveryCopies()
+      if (event.key === null || event.key === LAST_EXPORT_KEY) refreshLastExport()
+      if (event.key === null || event.key === GYM_STORAGE_KEY) syncFromStorage()
+    }
+    // Pages restored from the back/forward cache or woken up may have missed storage events.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') syncFromStorage()
     }
 
     window.addEventListener('storage', handleStorage)
-    onScopeDispose(() => window.removeEventListener('storage', handleStorage))
+    window.addEventListener('pageshow', syncFromStorage)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    onScopeDispose(() => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('pageshow', syncFromStorage)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    })
   }
 
   return {
@@ -421,15 +940,30 @@ export const useGymStore = defineStore('gym', () => {
     persistenceStatus,
     persistenceError,
     lastSavedAt,
+    writeBlock,
+    recoveryCopies,
+    lastExportAt,
+    storagePersisted,
+    storedSize,
     clearPersistenceError,
     addCategory,
+    renameCategory,
     deleteCategory,
     addExercise,
+    updateExercise,
     deleteExercise,
     logSet,
     updateSet,
     deleteSet,
     exportData,
-    importData,
+    markExported,
+    previewBackup,
+    previewRecoveryCopy,
+    importBackup,
+    restoreRecoveryCopy,
+    readRecoveryCopy,
+    deleteRecoveryCopy,
+    readUnreadableData,
+    releaseWriteBlock,
   }
 })
