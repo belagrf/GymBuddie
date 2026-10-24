@@ -5,9 +5,9 @@
   "type": "module",
   "engines": {
     "node": ">=24.15.0",
-    "npm": ">=11.0.0"
+    "npm": ">=11.6.4"
   },
-  "packageManager": "npm@11.6.2",
+  "packageManager": "npm@11.21.1",
   "scripts": {
     "dev": "vite",
     "build": "npm run type-check && npm run build-only",
@@ -56,5 +56,12 @@
     "vite-plugin-pwa": "^2.0.0",
     "vitest": "^4.1.12",
     "vue-tsc": "^3.3.7"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11.6.4",
+      "onFail": "error"
+    }
   }
 }

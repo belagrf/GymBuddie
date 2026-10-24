@@ -4,15 +4,48 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # Fresh releases are held back for a few days, so broken or compromised ones are usually
+    # pulled before they reach a pull request. Security updates are not delayed.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    open-pull-requests-limit: 10
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+      # Majors of packages that must move together arrive in one pull request each.
+      vite-toolchain:
+        update-types: [major]
+        patterns:
+          [
+            'vite',
+            '@vitejs/*',
+            'vite-plugin-pwa',
+            'vitest',
+            '@vitest/*',
+            '@tailwindcss/*',
+            'tailwindcss',
+          ]
+      lint-toolchain:
+        update-types: [major]
+        patterns: ['eslint', 'eslint-*', '@vue/eslint-config-*', 'typescript-eslint']
+      vue-ecosystem:
+        update-types: [major]
+        patterns: ['pinia', 'vue-router', '@vue/devtools-api']
+    ignore:
+      # typescript-eslint supports typescript <6.1; remove once its peer range includes newer versions.
+      - dependency-name: typescript
+        versions: ['>=6.1.0']
+      # Types follow the supported runtime (Node 24, see .node-version); bump together with it.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       actions:
         patterns: ['*']

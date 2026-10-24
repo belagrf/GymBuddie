@@ -145,8 +145,11 @@ Wichtige Projektbereiche:
 
 ### Voraussetzungen
 
-- Node.js 24.15 oder neuer
-- npm 11 oder neuer
+- Node.js 24 (mindestens 24.15). Die Version steht in `.node-version`; mise, nvm und fnm lesen sie
+  automatisch.
+- npm 11.6.4 oder neuer. npm 11.6.2 schreibt unvollständige Lockfiles, an denen `npm ci` scheitert,
+  deshalb bricht das Projekt mit dieser Version über `devEngines` ab (`EBADDEVENGINES`). Abhilfe:
+  Node 24 verwenden (z. B. `mise install` im Projektordner) oder `npm install -g npm@latest`.
 
 ### Projekt starten
 
@@ -217,7 +220,11 @@ und bei Änderungen an `main`.
 6. Nur bei `main` wird ausschließlich der erzeugte `dist`-Ordner auf GitHub Pages veröffentlicht.
    Nur dieser Job erhält Schreibrechte für Pages.
 
-Dependabot schlägt wöchentlich gebündelte Updates für npm-Pakete und GitHub Actions vor.
+Dependabot schlägt wöchentlich Updates für npm-Pakete und GitHub Actions vor. Kleinere Updates
+kommen gebündelt, große Versionssprünge zusammengehöriger Werkzeuge (Vite, ESLint, Pinia/Vue Router)
+jeweils in einem gemeinsamen Pull Request. Neue Versionen werden erst nach einigen Tagen
+vorgeschlagen. TypeScript ab 6.1 und neue Hauptversionen von `@types/node` sind bewusst
+zurückgestellt, bis `typescript-eslint` bzw. die Laufzeitumgebung nachziehen.
 
 Der Produktions-Basispfad wird in GitHub Actions aus `GITHUB_REPOSITORY` abgeleitet
 (`<owner>.github.io`-Repositories werden unter `/` ausgeliefert) und kann für andere Ziele über die
