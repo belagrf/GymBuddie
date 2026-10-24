@@ -205,6 +205,30 @@ describe('gym store', () => {
       expect(localStorage.getItem(GYM_STORAGE_KEY)).toBe(newer)
     })
 
+    it.each([['"2"'], ['1'], ['null'], ['0']])(
+      'treats version %s as damaged data, not as a newer app version',
+      (version) => {
+        const raw = `{"app":"GymBuddie","version":${version},"categories":[]}`
+        localStorage.setItem(GYM_STORAGE_KEY, raw)
+
+        const store = useGymStore()
+
+        expect(store.writeBlock).toBeNull()
+        expect(localStorage.getItem(RECOVERY_BACKUP_KEY)).toBe(raw)
+      },
+    )
+
+    it('keeps the legacy key when its original cannot be backed up', () => {
+      const legacyRaw = JSON.stringify([seedCategory()])
+      localStorage.setItem(LEGACY_STORAGE_KEY, legacyRaw)
+      failWritesTo(LEGACY_BACKUP_KEY)
+
+      const store = useGymStore()
+
+      expect(store.categories[0]?.name).toBe('Push')
+      expect(localStorage.getItem(LEGACY_STORAGE_KEY)).toBe(legacyRaw)
+    })
+
     it('warns when unreadable current data falls back to older legacy data', () => {
       localStorage.setItem(GYM_STORAGE_KEY, '{corrupt')
       localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify([seedCategory()]))
@@ -385,6 +409,95 @@ describe('gym store', () => {
       expect(JSON.stringify(store.categories)).toBe(before)
     })
 
+    it('restores a changed link when saving the exercise fails', () => {
+      seedStorage([
+        {
+          ...seedCategory(),
+          exercises: [
+            { id: 'exercise-1', name: 'Bankdrücken', videoUrl: 'https://a.example/', history: [] },
+          ],
+        },
+      ])
+      const store = useGymStore()
+      failWritesTo(GYM_STORAGE_KEY)
+
+      expect(
+        store.updateExercise('exercise-1', { name: 'Neu', videoUrl: 'https://b.example/' }).ok,
+      ).toBe(false)
+      expect(store.categories[0]?.exercises[0]).toMatchObject({
+        name: 'Bankdrücken',
+        videoUrl: 'https://a.example/',
+      })
+      expect(store.updateExercise('exercise-1', { name: 'Neu', videoUrl: '' }).ok).toBe(false)
+      expect(store.categories[0]?.exercises[0]?.videoUrl).toBe('https://a.example/')
+    })
+
+    it('keeps sessions newest first even if the clock moved backwards', () => {
+      seedStorage([
+        {
+          ...seedCategory(),
+          exercises: [
+            {
+              id: 'exercise-1',
+              name: 'Bankdrücken',
+              history: [
+                { date: '2026-07-14', sets: [{ id: 'future', weight: 60, reps: 8 }] },
+                { date: '2026-07-12', sets: [{ id: 'past', weight: 60, reps: 8 }] },
+              ],
+            },
+          ],
+        },
+      ])
+      const store = useGymStore()
+
+      expect(store.logSet('exercise-1', { weight: 65, reps: 5 }).ok).toBe(true)
+      expect(store.categories[0]?.exercises[0]?.history.map((session) => session.date)).toEqual([
+        '2026-07-14',
+        '2026-07-13',
+        '2026-07-12',
+      ])
+    })
+
+    it('puts the pre-import snapshot back when the retried save still does not fit', () => {
+      seedStorage()
+      localStorage.setItem(PRE_IMPORT_BACKUP_KEY, 'snapshot')
+      const store = useGymStore()
+      failWritesTo(GYM_STORAGE_KEY)
+
+      expect(store.logSet('exercise-1', { weight: 70, reps: 5 }).ok).toBe(false)
+      expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).toBe('snapshot')
+      expect(store.recoveryCopies.map((copy) => copy.key)).toEqual([PRE_IMPORT_BACKUP_KEY])
+    })
+
+    it('asks for persistent storage once, after the first successful save', async () => {
+      const persisted = vi.fn().mockResolvedValue(false)
+      const persist = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('navigator', { ...navigator, storage: { persisted, persist } })
+      const store = useGymStore()
+      await vi.waitFor(() => expect(persisted).toHaveBeenCalledTimes(1))
+      expect(persist).not.toHaveBeenCalled()
+
+      store.addCategory('Push')
+      store.addCategory('Pull')
+      await vi.waitFor(() => expect(store.storagePersisted).toBe(true))
+      expect(persist).toHaveBeenCalledTimes(1)
+      vi.unstubAllGlobals()
+    })
+
+    it('does not ask again when storage is already persistent', async () => {
+      const persist = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('navigator', {
+        ...navigator,
+        storage: { persisted: vi.fn().mockResolvedValue(true), persist },
+      })
+      const store = useGymStore()
+
+      store.addCategory('Push')
+      await vi.waitFor(() => expect(store.storagePersisted).toBe(true))
+      expect(persist).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
     it('frees the pre-import snapshot when a regular save runs out of space', () => {
       seedStorage()
       localStorage.setItem(PRE_IMPORT_BACKUP_KEY, 'snapshot')
@@ -432,7 +545,8 @@ describe('gym store', () => {
         ok: true,
         summary: { categories: 1, exercises: 0, sets: 0 },
         skipped: 0,
-        snapshotSaved: true,
+        corrections: 0,
+        snapshot: 'saved',
       })
       expect(store.categories.map((category) => category.name)).toEqual(['Pull'])
       expect(storedCategories().map((category) => category.name)).toEqual(['Pull'])
@@ -441,10 +555,108 @@ describe('gym store', () => {
         'Datenstand vor dem letzten Import',
       ])
 
-      const snapshot = store.readRecoveryCopy(PRE_IMPORT_BACKUP_KEY)
-      expect(snapshot && store.previewBackup(snapshot).ok).toBe(true)
-      expect(store.importBackup(snapshot ?? '').ok).toBe(true)
+      expect(store.recoveryCopies[0]).toMatchObject({
+        restorable: true,
+        savedAt: '2026-07-12T10:00:00.000Z',
+      })
+      expect(store.previewRecoveryCopy(PRE_IMPORT_BACKUP_KEY)).toMatchObject({
+        ok: true,
+        summary: { categories: 1, exercises: 1, sets: 1 },
+      })
+      expect(store.restoreRecoveryCopy(PRE_IMPORT_BACKUP_KEY).ok).toBe(true)
       expect(store.categories.map((category) => category.name)).toEqual(['Push'])
+    })
+
+    it('restores the legacy original copy, which is a raw array, through the stored-data rules', () => {
+      const legacyRaw = JSON.stringify([seedCategory()])
+      localStorage.setItem(LEGACY_STORAGE_KEY, legacyRaw)
+      const store = useGymStore()
+      store.addCategory('Neu')
+
+      expect(store.recoveryCopies).toEqual([
+        expect.objectContaining({ key: LEGACY_BACKUP_KEY, restorable: true }),
+      ])
+      // As a file, the same content is rejected, because exported backups are envelopes.
+      expect(store.previewBackup(legacyRaw).ok).toBe(false)
+      expect(store.restoreRecoveryCopy(LEGACY_BACKUP_KEY)).toMatchObject({ ok: true })
+      expect(store.categories.map((category) => category.name)).toEqual(['Push'])
+    })
+
+    it('marks unreadable copies as not restorable', () => {
+      localStorage.setItem(GYM_STORAGE_KEY, '{not-json')
+      const store = useGymStore()
+
+      expect(store.recoveryCopies[0]).toMatchObject({ restorable: false, savedAt: null })
+      expect(store.restoreRecoveryCopy(RECOVERY_BACKUP_KEY).ok).toBe(false)
+    })
+
+    it('reports that no snapshot was needed on a device without data', () => {
+      const store = useGymStore()
+
+      expect(store.importBackup(backupFile([seedCategory()]))).toMatchObject({
+        ok: true,
+        snapshot: 'not-needed',
+      })
+      expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).toBeNull()
+    })
+
+    it('keeps the previous snapshot when an import cannot be saved', () => {
+      seedStorage()
+      localStorage.setItem(PRE_IMPORT_BACKUP_KEY, 'original snapshot')
+      const store = useGymStore()
+      failWritesTo(GYM_STORAGE_KEY)
+
+      expect(store.importBackup(backupFile([{ id: 'pull', name: 'Pull', exercises: [] }])).ok).toBe(
+        false,
+      )
+      expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).toBe('original snapshot')
+    })
+
+    it('labels an old snapshot with its date when a new one cannot be written', () => {
+      seedStorage()
+      localStorage.setItem(
+        PRE_IMPORT_BACKUP_KEY,
+        JSON.stringify(createGymDataEnvelope([seedCategory()], '2026-01-05T08:00:00.000Z')),
+      )
+      const store = useGymStore()
+      failWritesTo(PRE_IMPORT_BACKUP_KEY)
+
+      expect(
+        store.importBackup(backupFile([{ id: 'pull', name: 'Pull', exercises: [] }])),
+      ).toMatchObject({ ok: true, snapshot: 'failed' })
+      expect(store.recoveryCopies[0]?.savedAt).toBe('2026-01-05T08:00:00.000Z')
+    })
+
+    it('refuses to import over data it cannot read', () => {
+      seedStorage()
+      const store = useGymStore()
+      vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
+        throw new DOMException('Denied', 'SecurityError')
+      })
+
+      expect(store.importBackup(backupFile([seedCategory()]))).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('nicht gelesen'),
+      })
+    })
+
+    it('imports over unpreserved unreadable data only when a snapshot of it can be kept', () => {
+      localStorage.setItem(RECOVERY_BACKUP_KEY, 'copy 1')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:2`, 'copy 2')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:3`, 'copy 3')
+      localStorage.setItem(GYM_STORAGE_KEY, '{unreadable')
+      const store = useGymStore()
+      expect(store.writeBlock).toBe('unpreserved-data')
+
+      const spy = failWritesTo(PRE_IMPORT_BACKUP_KEY)
+      expect(store.importBackup(backupFile([seedCategory()])).ok).toBe(false)
+      expect(localStorage.getItem(GYM_STORAGE_KEY)).toBe('{unreadable')
+
+      spy.mockRestore()
+      expect(store.importBackup(backupFile([seedCategory()])).ok).toBe(true)
+      expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).toBe('{unreadable')
+      expect(store.writeBlock).toBeNull()
+      expect(store.addCategory('Pull').ok).toBe(true)
     })
 
     it.each([
@@ -565,15 +777,80 @@ describe('gym store', () => {
       expect(localStorage.getItem(RECOVERY_BACKUP_KEY)).toBe('{broken')
     })
 
-    it('clears the data when another tab removes it', () => {
+    it('saves its data again when storage is wiped from outside', () => {
       seedStorage()
+      const store = useGymStore()
+      localStorage.clear()
+
+      dispatchStorageEvent(null)
+
+      expect(store.categories.map((category) => category.name)).toEqual(['Push'])
+      expect(storedCategories().map((category) => category.name)).toEqual(['Push'])
+      expect(store.persistenceError).toContain('außerhalb von GymBuddie gelöscht')
+    })
+
+    it('follows a removal when it has no data of its own', () => {
       const store = useGymStore()
       localStorage.removeItem(GYM_STORAGE_KEY)
 
       dispatchStorageEvent(null)
 
       expect(store.categories).toEqual([])
-      expect(store.persistenceStatus).toBe('synced')
+      expect(store.persistenceError).toBeNull()
+    })
+
+    it('keeps a copy before adopting partly invalid data from another tab', () => {
+      seedStorage()
+      const store = useGymStore()
+      const raw = JSON.stringify(
+        createGymDataEnvelope([
+          {
+            ...seedCategory(),
+            exercises: [
+              {
+                id: 'exercise-1',
+                name: 'Bankdrücken',
+                history: [{ date: '2026-07-12', sets: [{ id: 'x', weight: 2500, reps: 8 }] }],
+              },
+            ],
+          },
+        ]),
+      )
+      localStorage.setItem(GYM_STORAGE_KEY, raw)
+
+      dispatchStorageEvent(GYM_STORAGE_KEY)
+
+      expect(localStorage.getItem(RECOVERY_BACKUP_KEY)).toBe(raw)
+      expect(store.writeBlock).toBeNull()
+    })
+
+    it('blocks writes when another tab stores unreadable data and no copy fits', () => {
+      seedStorage()
+      localStorage.setItem(RECOVERY_BACKUP_KEY, 'copy 1')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:2`, 'copy 2')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:3`, 'copy 3')
+      const store = useGymStore()
+      localStorage.setItem(GYM_STORAGE_KEY, '{"app":"GymBuddie","version":2,"categories":[')
+
+      dispatchStorageEvent(GYM_STORAGE_KEY)
+
+      expect(store.writeBlock).toBe('unpreserved-data')
+      expect(store.addCategory('Pull').ok).toBe(false)
+    })
+
+    it('lifts its write block when another tab replaced the unreadable data', () => {
+      localStorage.setItem(RECOVERY_BACKUP_KEY, 'copy 1')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:2`, 'copy 2')
+      localStorage.setItem(`${RECOVERY_BACKUP_KEY}:3`, 'copy 3')
+      localStorage.setItem(GYM_STORAGE_KEY, '{unreadable')
+      const store = useGymStore()
+      expect(store.writeBlock).toBe('unpreserved-data')
+
+      seedStorage()
+      dispatchStorageEvent(GYM_STORAGE_KEY)
+
+      expect(store.writeBlock).toBeNull()
+      expect(store.addCategory('Pull').ok).toBe(true)
     })
   })
 })

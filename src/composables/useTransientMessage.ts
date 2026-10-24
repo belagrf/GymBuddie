@@ -6,6 +6,8 @@ export function useTransientMessage(durationMs = DEFAULT_DURATION_MS) {
   const message = ref('')
   let timeout: ReturnType<typeof setTimeout> | undefined
   let generation = 0
+  // Kept across clear(), because callers often clear() right before showing the same text again.
+  let lastShown = ''
 
   function cancelTimeout() {
     if (timeout === undefined) return
@@ -31,7 +33,7 @@ export function useTransientMessage(durationMs = DEFAULT_DURATION_MS) {
     generation += 1
     cancelTimeout()
 
-    if (value && value === message.value) {
+    if (value && value === lastShown) {
       // Live regions only announce DOM changes, so an identical message is removed and
       // re-inserted after a render to make screen readers repeat it.
       const current = generation
@@ -44,6 +46,7 @@ export function useTransientMessage(durationMs = DEFAULT_DURATION_MS) {
       return
     }
 
+    lastShown = value
     message.value = value
     if (value) startTimeout()
   }

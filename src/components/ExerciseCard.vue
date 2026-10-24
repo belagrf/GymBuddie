@@ -348,8 +348,8 @@ function handleDeleteSet(setId: string) {
       @submit.prevent="handleUpdateExercise"
       @keydown.esc="closeExerciseEdit"
     >
-      <fieldset>
-        <legend class="font-semibold text-gray-900">Übung bearbeiten</legend>
+      <fieldset class="min-w-0">
+        <legend class="font-semibold break-words text-gray-900">Übung bearbeiten</legend>
         <div class="mt-2 space-y-3">
           <label class="block text-sm font-medium text-gray-700">
             Name der Übung
@@ -424,7 +424,7 @@ function handleDeleteSet(setId: string) {
       role="group"
       :aria-label="`Löschen von ${exercise.name} bestätigen`"
     >
-      <p>
+      <p class="break-words">
         Übung „{{ exercise.name }}“ mit {{ totalHistorySets }}
         {{ totalHistorySets === 1 ? 'Satz' : 'Sätzen' }} wirklich löschen?
       </p>

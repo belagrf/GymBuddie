@@ -14,8 +14,10 @@ import {
   isValidSetValues,
   normalizeName,
   normalizeVideoUrl,
+  inspectRecoveryCopy,
   parseBackupFile,
   parseGymData,
+  parseRecoveryCopy,
   serializeGymData,
   toLocalDateKey,
   type BackupParseResult,
@@ -57,14 +59,27 @@ export type WriteBlockReason = 'unpreserved-data' | 'newer-version'
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
+/** `not-needed` means there was no previous data on this device to keep. */
+export type SnapshotState = 'saved' | 'not-needed' | 'failed'
+
 export type ImportResult =
-  | { ok: true; summary: GymDataSummary; skipped: number; snapshotSaved: boolean }
+  | {
+      ok: true
+      summary: GymDataSummary
+      skipped: number
+      corrections: number
+      snapshot: SnapshotState
+    }
   | { ok: false; error: string }
 
 export interface RecoveryCopy {
   key: string
   label: string
   size: number
+  /** When the copied data was exported or last saved, if known. */
+  savedAt: string | null
+  /** Whether the copy looks like training data that can be restored. */
+  restorable: boolean
 }
 
 const STORAGE_UNAVAILABLE =
@@ -80,7 +95,7 @@ const INVALID_SET = `Gib ein Gewicht von 0 bis ${MAX_WEIGHT_KG.toLocaleString('d
 export function writeBlockMessage(reason: WriteBlockReason): string {
   return reason === 'newer-version'
     ? 'Deine Daten wurden mit einer neueren GymBuddie-Version gespeichert. Bitte lade die App neu, damit sie sich aktualisiert. Bis dahin werden keine Änderungen gespeichert.'
-    : 'Gespeicherte Daten konnten nicht gelesen werden, und für eine Sicherungskopie war kein Platz. Lade die Rohdaten unter „Daten sichern“ herunter oder verwirf sie – bis dahin werden keine Änderungen gespeichert.'
+    : 'Gespeicherte Daten konnten nicht gelesen werden, und für eine Sicherungskopie war kein Platz. Lade die Rohdaten hier über „Rohdaten herunterladen“ herunter oder verwirf sie – bis dahin werden keine Änderungen gespeichert. „Backup exportieren“ enthält die unlesbaren Daten nicht.'
 }
 
 interface InitialData {
@@ -203,8 +218,9 @@ function loadLegacyData(
     error =
       'Die aktuellen Daten waren beschädigt und wurden als Wiederherstellungskopie gesichert. Es wurde der ältere Datenstand wiederhergestellt – bitte prüfe deine Daten.'
   } else if (error === null && parsed.issues.length > 0) {
-    error =
-      'Einige beschädigte alte Einträge wurden übersprungen. Das unveränderte Original findest du unter „Daten sichern“.'
+    error = backupSaved
+      ? 'Einige beschädigte alte Einträge wurden übersprungen. Das unveränderte Original findest du unter „Daten sichern“.'
+      : 'Einige beschädigte alte Einträge wurden übersprungen. Das Original bleibt unter dem alten Speicherschlüssel erhalten, konnte aber nicht zusätzlich gesichert werden.'
   }
 
   return {
@@ -235,11 +251,12 @@ function loadInitialData(): InitialData {
   try {
     currentRaw = storage.getItem(GYM_STORAGE_KEY)
     legacyRaw = storage.getItem(LEGACY_STORAGE_KEY)
-  } catch (error) {
+  } catch {
     return {
       categories: [],
       status: 'error',
-      error: errorMessage(error),
+      error:
+        'Der Browser verweigert den Zugriff auf den lokalen Speicher. Gespeicherte Daten konnten nicht gelesen werden.',
       storage,
       knownRaw: null,
       writeBlock: null,
@@ -383,8 +400,13 @@ export const useGymStore = defineStore('gym', () => {
           const key = storage.key(index)
           if (!key?.startsWith(BACKUP_KEY_PREFIX)) continue
           const value = storage.getItem(key)
-          if (value !== null)
-            copies.push({ key, label: describeBackupKey(key), size: value.length })
+          if (value === null) continue
+          copies.push({
+            key,
+            label: describeBackupKey(key),
+            size: value.length,
+            ...inspectRecoveryCopy(value),
+          })
         }
       } catch {
         // Listing is best effort; the copies stay in storage either way.
@@ -436,13 +458,24 @@ export const useGymStore = defineStore('gym', () => {
   }
 
   function applyExternal(raw: string | null) {
-    setKnownRaw(raw)
     if (raw === null) {
+      setKnownRaw(null)
+      // GymBuddie never removes its own data, so this is a wipe (cleared site data, eviction,
+      // another page on this origin). This tab now holds the only copy: save it again.
+      if (categories.value.length > 0 && writeBlock.value === null) {
+        const saved = write()
+        persistenceStatus.value = saved.ok ? 'saved' : 'error'
+        persistenceError.value = saved.ok
+          ? 'Die gespeicherten Daten wurden außerhalb von GymBuddie gelöscht und aus diesem Tab wiederhergestellt. Exportiere zur Sicherheit ein Backup.'
+          : `Die gespeicherten Daten wurden außerhalb von GymBuddie gelöscht und konnten nicht wiederhergestellt werden. Exportiere sofort ein Backup. ${saved.error}`
+        return
+      }
       categories.value = []
       persistenceStatus.value = 'synced'
       return
     }
 
+    setKnownRaw(raw)
     const parsed = parseGymData(raw)
     if (!parsed.ok) {
       persistenceStatus.value = 'error'
@@ -451,18 +484,29 @@ export const useGymStore = defineStore('gym', () => {
         persistenceError.value = parsed.error
         return
       }
-      if (storage) preserveRawBackup(storage, RECOVERY_BACKUP_KEY, raw)
+      const preserved = storage ? preserveRawBackup(storage, RECOVERY_BACKUP_KEY, raw) : false
       refreshRecoveryCopies()
+      if (!preserved) writeBlock.value = 'unpreserved-data'
       persistenceError.value = `Änderungen aus einem anderen Tab konnten nicht geladen werden: ${parsed.error}`
       return
     }
 
-    categories.value = parsed.categories
-    persistenceStatus.value = 'synced'
+    // The next save would drop skipped entries for good, so keep the original first.
     if (parsed.issues.length > 0) {
-      persistenceError.value =
-        'Einige ungültige Änderungen aus einem anderen Tab wurden übersprungen.'
+      const preserved = storage ? preserveRawBackup(storage, RECOVERY_BACKUP_KEY, raw) : false
+      refreshRecoveryCopies()
+      if (!preserved) writeBlock.value = 'unpreserved-data'
+    } else if (writeBlock.value === 'unpreserved-data') {
+      // Another tab replaced the protected payload with valid data; nothing is left to protect.
+      writeBlock.value = null
     }
+
+    categories.value = parsed.categories
+    persistenceStatus.value = parsed.issues.length > 0 ? 'error' : 'synced'
+    persistenceError.value =
+      parsed.issues.length > 0
+        ? 'Einige ungültige Änderungen aus einem anderen Tab wurden ausgeblendet. Das Original findest du unter „Daten sichern“.'
+        : null
   }
 
   function syncFromStorage() {
@@ -489,10 +533,18 @@ export const useGymStore = defineStore('gym', () => {
         storage.setItem(GYM_STORAGE_KEY, serialized)
       } catch (error) {
         // The pre-import snapshot is the most expendable copy; give its space to the live data.
-        if (!isQuotaError(error) || storage.getItem(PRE_IMPORT_BACKUP_KEY) === null) throw error
+        const snapshot = isQuotaError(error) ? storage.getItem(PRE_IMPORT_BACKUP_KEY) : null
+        if (snapshot === null) throw error
         storage.removeItem(PRE_IMPORT_BACKUP_KEY)
-        storage.setItem(GYM_STORAGE_KEY, serialized)
-        refreshRecoveryCopies()
+        try {
+          storage.setItem(GYM_STORAGE_KEY, serialized)
+        } catch (retryError) {
+          // Still too big: put the snapshot back, its space is free again.
+          storage.setItem(PRE_IMPORT_BACKUP_KEY, snapshot)
+          throw retryError
+        } finally {
+          refreshRecoveryCopies()
+        }
         persistenceError.value =
           'Der Speicher war voll. Die Kopie des Datenstands vor dem letzten Import wurde gelöscht, um deine Änderung zu speichern.'
       }
@@ -733,32 +785,43 @@ export const useGymStore = defineStore('gym', () => {
     return parseBackupFile(serialized)
   }
 
-  function importBackup(serialized: string): ImportResult {
-    const parsed = parseBackupFile(serialized)
+  function previewRecoveryCopy(key: string): BackupParseResult {
+    const contents = readRecoveryCopy(key)
+    if (contents === null) return { ok: false, error: 'Die Kopie konnte nicht gelesen werden.' }
+    return parseRecoveryCopy(contents)
+  }
+
+  /** Replaces all data after keeping the current state as the "before last import" copy. */
+  function replaceAll(parsed: BackupParseResult): ImportResult {
     if (!parsed.ok) return { ok: false, error: `Import fehlgeschlagen: ${parsed.error}` }
     if (writeBlock.value === 'newer-version') {
       return { ok: false, error: writeBlockMessage('newer-version') }
     }
     if (!storage) return { ok: false, error: STORAGE_UNAVAILABLE }
 
-    let current: string | null = null
+    let current: string | null
+    let previousSnapshot: string | null
     try {
       current = storage.getItem(GYM_STORAGE_KEY)
+      previousSnapshot = storage.getItem(PRE_IMPORT_BACKUP_KEY)
     } catch {
-      current = knownRaw
+      // Never replace data that could not even be read.
+      return {
+        ok: false,
+        error: 'Import fehlgeschlagen: Der lokale Speicher kann nicht gelesen werden.',
+      }
     }
 
-    // Keep the replaced data so a wrong import can be reverted from a downloaded copy.
-    let snapshotSaved = current === null
+    let snapshot: SnapshotState = 'not-needed'
     if (current !== null) {
       try {
         storage.setItem(PRE_IMPORT_BACKUP_KEY, current)
-        snapshotSaved = true
+        snapshot = 'saved'
       } catch {
-        snapshotSaved = false
+        snapshot = 'failed'
       }
     }
-    if (writeBlock.value === 'unpreserved-data' && !snapshotSaved) {
+    if (writeBlock.value === 'unpreserved-data' && snapshot === 'failed') {
       return { ok: false, error: writeBlockMessage('unpreserved-data') }
     }
 
@@ -766,6 +829,15 @@ export const useGymStore = defineStore('gym', () => {
     try {
       storage.setItem(GYM_STORAGE_KEY, serializedData)
     } catch (error) {
+      // The import did not happen, so the previous snapshot is still the right one.
+      try {
+        if (snapshot === 'saved') {
+          if (previousSnapshot === null) storage.removeItem(PRE_IMPORT_BACKUP_KEY)
+          else storage.setItem(PRE_IMPORT_BACKUP_KEY, previousSnapshot)
+        }
+      } catch {
+        // Best effort; the live data is unchanged either way.
+      }
       refreshRecoveryCopies()
       return { ok: false, error: `Import fehlgeschlagen: ${errorMessage(error)}` }
     }
@@ -781,9 +853,18 @@ export const useGymStore = defineStore('gym', () => {
     return {
       ok: true,
       summary: parsed.summary,
-      skipped: parsed.issues.length,
-      snapshotSaved,
+      skipped: parsed.skipped,
+      corrections: parsed.issues.length,
+      snapshot,
     }
+  }
+
+  function importBackup(serialized: string): ImportResult {
+    return replaceAll(parseBackupFile(serialized))
+  }
+
+  function restoreRecoveryCopy(key: string): ImportResult {
+    return replaceAll(previewRecoveryCopy(key))
   }
 
   function readRecoveryCopy(key: string): string | null {
@@ -877,7 +958,9 @@ export const useGymStore = defineStore('gym', () => {
     exportData,
     markExported,
     previewBackup,
+    previewRecoveryCopy,
     importBackup,
+    restoreRecoveryCopy,
     readRecoveryCopy,
     deleteRecoveryCopy,
     readUnreadableData,

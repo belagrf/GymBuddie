@@ -10,8 +10,9 @@ export function resolveBasePath(env: Record<string, string | undefined> = proces
   const explicit = env.VITE_BASE_PATH?.trim()
   if (explicit) return `/${explicit.replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/')
 
-  const repositoryName = env.GITHUB_REPOSITORY?.split('/').at(-1)
+  const [owner, repositoryName] = env.GITHUB_REPOSITORY?.split('/') ?? []
   if (!repositoryName) return '/GymBuddie/'
-  if (repositoryName.toLowerCase().endsWith('.github.io')) return '/'
+  // Only a repository named exactly <owner>.github.io is a user site served from the root.
+  if (repositoryName.toLowerCase() === `${owner?.toLowerCase()}.github.io`) return '/'
   return `/${repositoryName}/`
 }

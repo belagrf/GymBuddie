@@ -58,6 +58,7 @@ export type GymDataParseResult =
       ok: true
       categories: Category[]
       issues: string[]
+      skipped: number
       migrated: boolean
       needsRewrite: boolean
     }
@@ -78,8 +79,11 @@ export type BackupParseResult =
       ok: true
       categories: Category[]
       issues: string[]
+      /** Entries dropped while reading; `issues` also lists corrections that lost nothing. */
+      skipped: number
       summary: GymDataSummary
-      exportedAt: string | null
+      /** When the data was exported or last saved, if the file says so. */
+      savedAt: string | null
     }
   | {
       ok: false
@@ -88,6 +92,8 @@ export type BackupParseResult =
 
 interface SanitizeContext {
   issues: string[]
+  /** Entries (categories, exercises, sessions, sets) that were dropped, not just corrected. */
+  skipped: number
   migrated: boolean
   needsRewrite: boolean
   categoryIds: Set<string>
@@ -99,8 +105,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function recordIssue(context: SanitizeContext, issue: string) {
+function recordIssue(context: SanitizeContext, issue: string, skippedEntries = 0) {
   if (context.issues.length < MAX_RECORDED_ISSUES) context.issues.push(issue)
+  context.skipped += skippedEntries
   context.needsRewrite = true
 }
 
@@ -164,7 +171,8 @@ export function normalizeVideoUrl(value: unknown): string | null {
   try {
     const url = new URL(hasScheme ? trimmed : `https://${trimmed}`)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    if (!hasScheme && !url.hostname.includes('.')) return null
+    // Without a typed scheme, require a real host name: "42" would otherwise become 0.0.0.42.
+    if (!hasScheme && (!url.hostname.includes('.') || !/[a-z]/i.test(url.hostname))) return null
     // Check the canonical form: percent-encoding can make it longer than the input.
     return url.href.length <= MAX_VIDEO_URL_LENGTH ? url.href : null
   } catch {
@@ -235,7 +243,7 @@ function generatedUniqueId(usedIds: Set<string>): string {
 
 function sanitizeSet(value: unknown, context: SanitizeContext): SetEntry | null {
   if (!isRecord(value) || !isValidSetValues(value.weight, value.reps)) {
-    recordIssue(context, 'Ein ungültiger Satz wurde übersprungen.')
+    recordIssue(context, 'Ein ungültiger Satz wurde übersprungen.', 1)
     return null
   }
 
@@ -257,12 +265,20 @@ function addSetsToSession(
   const existing = sessions.get(date) ?? []
   const availableSlots = MAX_SETS_PER_SESSION - existing.length
   if (availableSlots <= 0) {
-    recordIssue(context, `Zusätzliche Sätze für ${date} wurden wegen des Limits übersprungen.`)
+    recordIssue(
+      context,
+      `Zusätzliche Sätze für ${date} wurden wegen des Limits übersprungen.`,
+      sets.length,
+    )
     return
   }
 
   if (sets.length > availableSlots) {
-    recordIssue(context, `Zusätzliche Sätze für ${date} wurden wegen des Limits gekürzt.`)
+    recordIssue(
+      context,
+      `Zusätzliche Sätze für ${date} wurden wegen des Limits gekürzt.`,
+      sets.length - availableSlots,
+    )
   }
   sessions.set(date, existing.concat(sets.slice(0, availableSlots)))
 }
@@ -274,13 +290,17 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
   }
 
   if (value.length > MAX_HISTORY_ENTRIES_PER_EXERCISE) {
-    recordIssue(context, 'Eine übergroße Trainingshistorie wurde gekürzt.')
+    recordIssue(
+      context,
+      'Eine übergroße Trainingshistorie wurde gekürzt.',
+      value.length - MAX_HISTORY_ENTRIES_PER_EXERCISE,
+    )
   }
 
   const groupedSessions = new Map<string, SetEntry[]>()
   for (const sessionValue of value.slice(0, MAX_HISTORY_ENTRIES_PER_EXERCISE)) {
     if (!isRecord(sessionValue) || !isCalendarDateKey(sessionValue.date)) {
-      recordIssue(context, 'Eine Trainingseinheit mit ungültigem Datum wurde übersprungen.')
+      recordIssue(context, 'Eine Trainingseinheit mit ungültigem Datum wurde übersprungen.', 1)
       continue
     }
 
@@ -292,6 +312,7 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
         recordIssue(
           context,
           `Zusätzliche Sätze für ${sessionValue.date} wurden wegen des Limits übersprungen.`,
+          sessionValue.sets.length,
         )
         continue
       }
@@ -299,6 +320,7 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
         recordIssue(
           context,
           `Eine übergroße Trainingseinheit für ${sessionValue.date} wurde gekürzt.`,
+          sessionValue.sets.length - availableSlots,
         )
       }
       for (const setValue of sessionValue.sets.slice(0, availableSlots)) {
@@ -323,7 +345,11 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
         setCount > MAX_SETS_PER_SESSION ||
         !isValidSetValues(sessionValue.weight, sessionValue.reps)
       ) {
-        recordIssue(context, 'Ein ungültiger Eintrag aus dem alten Datenformat wurde übersprungen.')
+        recordIssue(
+          context,
+          'Ein ungültiger Eintrag aus dem alten Datenformat wurde übersprungen.',
+          1,
+        )
         continue
       }
 
@@ -331,11 +357,16 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
         recordIssue(
           context,
           `Zusätzliche Sätze für ${sessionValue.date} wurden wegen des Limits übersprungen.`,
+          setCount,
         )
         continue
       }
       if (setCount > availableSlots) {
-        recordIssue(context, `Alte Sätze für ${sessionValue.date} wurden wegen des Limits gekürzt.`)
+        recordIssue(
+          context,
+          `Alte Sätze für ${sessionValue.date} wurden wegen des Limits gekürzt.`,
+          setCount - availableSlots,
+        )
       }
 
       const migratedSets = Array.from({ length: Math.min(setCount, availableSlots) }, () => ({
@@ -347,7 +378,7 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
       continue
     }
 
-    recordIssue(context, 'Eine Trainingseinheit mit ungültigen Sätzen wurde übersprungen.')
+    recordIssue(context, 'Eine Trainingseinheit mit ungültigen Sätzen wurde übersprungen.', 1)
   }
 
   return Array.from(groupedSessions, ([date, sets]) => ({ date, sets })).sort((a, b) =>
@@ -357,13 +388,13 @@ function sanitizeHistory(value: unknown, context: SanitizeContext): WorkoutSessi
 
 function sanitizeExercise(value: unknown, context: SanitizeContext): Exercise | null {
   if (!isRecord(value)) {
-    recordIssue(context, 'Eine ungültige Übung wurde übersprungen.')
+    recordIssue(context, 'Eine ungültige Übung wurde übersprungen.', 1)
     return null
   }
 
   const name = normalizeImportedName(value.name)
   if (!name) {
-    recordIssue(context, 'Eine Übung ohne gültigen Namen wurde übersprungen.')
+    recordIssue(context, 'Eine Übung ohne gültigen Namen wurde übersprungen.', 1)
     return null
   }
   if (name !== value.name) context.needsRewrite = true
@@ -385,13 +416,13 @@ function sanitizeExercise(value: unknown, context: SanitizeContext): Exercise | 
 
 function sanitizeCategory(value: unknown, context: SanitizeContext): Category | null {
   if (!isRecord(value)) {
-    recordIssue(context, 'Eine ungültige Kategorie wurde übersprungen.')
+    recordIssue(context, 'Eine ungültige Kategorie wurde übersprungen.', 1)
     return null
   }
 
   const name = normalizeImportedName(value.name)
   if (!name) {
-    recordIssue(context, 'Eine Kategorie ohne gültigen Namen wurde übersprungen.')
+    recordIssue(context, 'Eine Kategorie ohne gültigen Namen wurde übersprungen.', 1)
     return null
   }
   if (name !== value.name) context.needsRewrite = true
@@ -401,7 +432,11 @@ function sanitizeCategory(value: unknown, context: SanitizeContext): Category | 
     recordIssue(context, `Die Übungen der Kategorie „${name}“ fehlten oder waren ungültig.`)
   }
   if (exercisesValue.length > MAX_EXERCISES_PER_CATEGORY) {
-    recordIssue(context, `Die Kategorie „${name}“ wurde wegen des Übungslimits gekürzt.`)
+    recordIssue(
+      context,
+      `Die Kategorie „${name}“ wurde wegen des Übungslimits gekürzt.`,
+      exercisesValue.length - MAX_EXERCISES_PER_CATEGORY,
+    )
   }
 
   const exercises: Exercise[] = []
@@ -420,11 +455,13 @@ function sanitizeCategory(value: unknown, context: SanitizeContext): Category | 
 export function sanitizeCategories(value: unknown): {
   categories: Category[]
   issues: string[]
+  skipped: number
   migrated: boolean
   needsRewrite: boolean
 } {
   const context: SanitizeContext = {
     issues: [],
+    skipped: 0,
     migrated: false,
     needsRewrite: false,
     categoryIds: new Set(),
@@ -436,13 +473,18 @@ export function sanitizeCategories(value: unknown): {
     return {
       categories: [],
       issues: ['Die gespeicherten Kategorien waren ungültig.'],
+      skipped: 0,
       migrated: false,
       needsRewrite: true,
     }
   }
 
   if (value.length > MAX_CATEGORIES) {
-    recordIssue(context, 'Die Kategorien wurden wegen des Limits gekürzt.')
+    recordIssue(
+      context,
+      'Die Kategorien wurden wegen des Limits gekürzt.',
+      value.length - MAX_CATEGORIES,
+    )
   }
 
   const categories: Category[] = []
@@ -454,6 +496,7 @@ export function sanitizeCategories(value: unknown): {
   return {
     categories,
     issues: context.issues,
+    skipped: context.skipped,
     migrated: context.migrated,
     needsRewrite: context.needsRewrite,
   }
@@ -480,14 +523,22 @@ function parseGymValue(parsed: unknown): GymDataParseResult {
     unwrappedLegacyData = true
   } else if (isRecord(parsed)) {
     if ('version' in parsed && parsed.version !== GYM_DATA_VERSION) {
-      const version =
-        typeof parsed.version === 'number' && Number.isInteger(parsed.version)
-          ? `Datenversion ${parsed.version}`
-          : 'Diese Datenversion'
+      // Only a genuinely newer version locks writes; anything else is simply damaged data.
+      if (
+        typeof parsed.version === 'number' &&
+        Number.isInteger(parsed.version) &&
+        parsed.version > GYM_DATA_VERSION
+      ) {
+        return {
+          ok: false,
+          reason: 'unsupported-version',
+          error: `Datenversion ${parsed.version} wird nicht unterstützt. Bitte aktualisiere GymBuddie.`,
+        }
+      }
       return {
         ok: false,
-        reason: 'unsupported-version',
-        error: `${version} wird nicht unterstützt. Bitte aktualisiere GymBuddie.`,
+        reason: 'invalid-format',
+        error: 'Die Datenversion ist ungültig.',
       }
     }
     if (!('categories' in parsed) || !Array.isArray(parsed.categories)) {
@@ -509,6 +560,7 @@ function parseGymValue(parsed: unknown): GymDataParseResult {
       ok: true,
       categories: sanitized.categories,
       issues: sanitized.issues,
+      skipped: sanitized.skipped,
       migrated: unwrappedLegacyData || sanitized.migrated,
       needsRewrite: envelopeNeedsRewrite || sanitized.needsRewrite || sanitized.migrated,
     }
@@ -533,6 +585,31 @@ export function summarizeCategories(categories: Category[]): GymDataSummary {
   return { categories: categories.length, exercises, sets }
 }
 
+function savedAtOf(parsed: unknown): string | null {
+  if (!isRecord(parsed)) return null
+  for (const value of [parsed.exportedAt, parsed.updatedAt]) {
+    if (typeof value === 'string' && !Number.isNaN(Date.parse(value))) return value
+  }
+  return null
+}
+
+function toBackupResult(parsed: unknown): BackupParseResult {
+  const result = parseGymValue(parsed)
+  if (!result.ok) return { ok: false, error: result.error }
+  if (result.categories.length === 0) {
+    return { ok: false, error: 'Das Backup enthält keine verwendbaren Trainingsdaten.' }
+  }
+
+  return {
+    ok: true,
+    categories: result.categories,
+    issues: result.issues,
+    skipped: result.skipped,
+    summary: summarizeCategories(result.categories),
+    savedAt: savedAtOf(parsed),
+  }
+}
+
 /**
  * Parses a backup file chosen by the user. Unlike stored data, a file must carry the
  * GymBuddie envelope and contain at least one usable category, so picking the wrong
@@ -549,25 +626,45 @@ export function parseBackupFile(serialized: string): BackupParseResult {
   if (!isRecord(parsed) || parsed.app !== 'GymBuddie') {
     return { ok: false, error: 'Die Datei ist kein GymBuddie-Backup.' }
   }
+  return toBackupResult(parsed)
+}
 
-  const result = parseGymValue(parsed)
-  if (!result.ok) return { ok: false, error: result.error }
-  if (result.categories.length === 0) {
-    return { ok: false, error: 'Das Backup enthält keine verwendbaren Trainingsdaten.' }
+/**
+ * A cheap check for listing recovery copies: whether a copy looks restorable and when its
+ * data was saved. The full validation runs when the user actually restores it.
+ */
+export function inspectRecoveryCopy(serialized: string): {
+  savedAt: string | null
+  restorable: boolean
+} {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    return { savedAt: null, restorable: false }
   }
 
-  const exportedAt =
-    typeof parsed.exportedAt === 'string' && !Number.isNaN(Date.parse(parsed.exportedAt))
-      ? parsed.exportedAt
-      : null
-
+  const categories = Array.isArray(parsed) ? parsed : isRecord(parsed) ? parsed.categories : null
+  const supportedVersion =
+    !isRecord(parsed) || !('version' in parsed) || parsed.version === GYM_DATA_VERSION
   return {
-    ok: true,
-    categories: result.categories,
-    issues: result.issues,
-    summary: summarizeCategories(result.categories),
-    exportedAt,
+    savedAt: savedAtOf(parsed),
+    restorable: Array.isArray(categories) && categories.length > 0 && supportedVersion,
   }
+}
+
+/**
+ * Parses a recovery copy GymBuddie stored itself. These may hold the legacy array format,
+ * so they follow the stored-data rules, but restoring still needs at least one category.
+ */
+export function parseRecoveryCopy(serialized: string): BackupParseResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    return { ok: false, error: 'Die Kopie enthält kein gültiges JSON.' }
+  }
+  return toBackupResult(parsed)
 }
 
 export function createGymDataEnvelope(

@@ -15,6 +15,8 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL,
+    // Transitions (e.g. the fading PWA toast) would otherwise race the axe contrast checks.
+    reducedMotion: 'reduce',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },

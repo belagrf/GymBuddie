@@ -1,6 +1,14 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
+async function analyzeAccessibility(page: Page) {
+  // Never measure contrast mid-transition, when elements are still partly transparent.
+  await page.waitForFunction(
+    () => !document.querySelector('[class*="-enter-active"], [class*="-leave-active"]'),
+  )
+  return new AxeBuilder({ page }).analyze()
+}
+
 async function waitForServiceWorker(page: Page) {
   await page.evaluate(async () => {
     const serviceWorker = (navigator as unknown as { serviceWorker: { ready: Promise<unknown> } })
@@ -16,7 +24,7 @@ test('loads the application without detectable accessibility violations', async 
   await waitForServiceWorker(page)
   await expect(page.getByRole('status')).toContainText('offline verfügbar')
 
-  const accessibilityScanResults = await new AxeBuilder({ page }).analyze()
+  const accessibilityScanResults = await analyzeAccessibility(page)
   expect(accessibilityScanResults.violations).toEqual([])
 })
 
@@ -69,7 +77,7 @@ test('supports the core workout flow at a 320px viewport without overflow', asyn
   }))
   expect(pageWidth).toEqual({ clientWidth: 320, scrollWidth: 320 })
 
-  const accessibilityScanResults = await new AxeBuilder({ page }).analyze()
+  const accessibilityScanResults = await analyzeAccessibility(page)
   expect(accessibilityScanResults.violations).toEqual([])
 })
 
@@ -220,7 +228,7 @@ test('reviews, imports, and restores backups without accessibility violations', 
   await page.getByRole('button', { name: 'Übung hinzufügen' }).click()
   await page.getByRole('button', { name: 'Übung Bankdrücken bearbeiten' }).click()
 
-  const openFormsScan = await new AxeBuilder({ page }).analyze()
+  const openFormsScan = await analyzeAccessibility(page)
   expect(openFormsScan.violations).toEqual([])
 
   await page.getByRole('button', { name: 'Namen speichern' }).click()
@@ -231,7 +239,7 @@ test('reviews, imports, and restores backups without accessibility violations', 
   await expect(review).toContainText('1 Kategorie, 1 Übung, 1 Satz')
   await expect(page.locator('#import-review-heading')).toBeFocused()
 
-  const reviewScan = await new AxeBuilder({ page }).analyze()
+  const reviewScan = await analyzeAccessibility(page)
   expect(reviewScan.violations).toEqual([])
 
   await page.getByRole('button', { name: 'Daten ersetzen' }).click()

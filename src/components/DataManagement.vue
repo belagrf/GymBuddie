@@ -2,16 +2,24 @@
 import { downloadTextFile } from '@/composables/download'
 import { focusById } from '@/composables/focus'
 import { useTransientMessage } from '@/composables/useTransientMessage'
-import { MAX_IMPORT_BYTES, summarizeCategories, type GymDataSummary } from '@/domain/gymData'
+import {
+  MAX_IMPORT_BYTES,
+  summarizeCategories,
+  type BackupParseResult,
+  type GymDataSummary,
+} from '@/domain/gymData'
 import { toLocalDateKey, useGymStore, type RecoveryCopy } from '@/stores/gymStore'
 import { computed, ref } from 'vue'
 
+type ImportSource = { kind: 'file'; contents: string } | { kind: 'copy'; key: string }
+
 interface PendingImport {
   name: string
-  contents: string
+  source: ImportSource
   summary: GymDataSummary
   skipped: number
-  exportedAt: string | null
+  corrections: number
+  savedAt: string | null
 }
 
 const gymStore = useGymStore()
@@ -58,6 +66,16 @@ function formatSize(characters: number) {
   return `ca. ${Math.max(1, Math.round(characters / 1024)).toLocaleString('de-DE')} KB`
 }
 
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : dateTimeFormatter.format(date)
+}
+
+function describeSkipped(skipped: number, future: boolean) {
+  const verb = future ? (skipped === 1 ? 'wird' : 'werden') : skipped === 1 ? 'wurde' : 'wurden'
+  return `${skipped.toLocaleString('de-DE')} ${skipped === 1 ? 'ungültiger Eintrag' : 'ungültige Einträge'} ${verb} übersprungen.`
+}
+
 function describeSummary(summary: GymDataSummary) {
   const plural = (count: number, one: string, many: string) =>
     `${count.toLocaleString('de-DE')} ${count === 1 ? one : many}`
@@ -90,8 +108,7 @@ function handleExport() {
   showDataStatus('Backup wurde erstellt. Bewahre die Datei an einem sicheren Ort auf.')
 }
 
-function openImportReview(name: string, contents: string) {
-  const preview = gymStore.previewBackup(contents)
+function openImportReview(name: string, preview: BackupParseResult, source: ImportSource) {
   if (!preview.ok) {
     dataError.value = `„${name}“ kann nicht importiert werden: ${preview.error}`
     resetFileInput()
@@ -100,10 +117,11 @@ function openImportReview(name: string, contents: string) {
 
   pendingImport.value = {
     name,
-    contents,
+    source,
     summary: preview.summary,
-    skipped: preview.issues.length,
-    exportedAt: preview.exportedAt,
+    skipped: preview.skipped,
+    corrections: preview.issues.length,
+    savedAt: preview.savedAt,
   }
   void focusById('import-review-heading')
 }
@@ -130,7 +148,7 @@ async function handleImportSelection(event: Event) {
     resetFileInput()
     return
   }
-  openImportReview(file.name, contents)
+  openImportReview(file.name, gymStore.previewBackup(contents), { kind: 'file', contents })
 }
 
 function cancelImport() {
@@ -144,7 +162,10 @@ function confirmImport() {
   if (!pending) return
 
   resetMessages()
-  const result = gymStore.importBackup(pending.contents)
+  const result =
+    pending.source.kind === 'file'
+      ? gymStore.importBackup(pending.source.contents)
+      : gymStore.restoreRecoveryCopy(pending.source.key)
   if (!result.ok) {
     dataError.value = result.error
     return
@@ -153,14 +174,14 @@ function confirmImport() {
   pendingImport.value = null
   resetFileInput()
   const notes = [
-    result.skipped > 0
-      ? `${result.skipped} ungültige ${result.skipped === 1 ? 'Eintrag wurde' : 'Einträge wurden'} übersprungen.`
+    result.skipped > 0 ? describeSkipped(result.skipped, false) : '',
+    result.snapshot === 'saved' ? 'Der vorherige Datenstand ist unten als Kopie gesichert.' : '',
+    result.snapshot === 'failed'
+      ? 'Der vorherige Datenstand konnte nicht als Kopie gesichert werden.'
       : '',
-    result.snapshotSaved
-      ? 'Der vorherige Datenstand ist unten als Kopie gesichert.'
-      : 'Der vorherige Datenstand konnte nicht als Kopie gesichert werden.',
   ].filter(Boolean)
-  showDataStatus(`Backup importiert: ${describeSummary(result.summary)}. ${notes.join(' ')}`)
+  const action = pending.source.kind === 'file' ? 'Backup importiert' : 'Kopie wiederhergestellt'
+  showDataStatus(`${action}: ${describeSummary(result.summary)}. ${notes.join(' ')}`.trim())
   void focusById('import-input')
 }
 
@@ -187,12 +208,10 @@ function downloadCopy(copy: RecoveryCopy) {
 
 function restoreCopy(copy: RecoveryCopy) {
   resetMessages()
-  const contents = gymStore.readRecoveryCopy(copy.key)
-  if (contents === null) {
-    dataError.value = 'Die Kopie konnte nicht gelesen werden.'
-    return
-  }
-  openImportReview(copy.label, contents)
+  openImportReview(copy.label, gymStore.previewRecoveryCopy(copy.key), {
+    kind: 'copy',
+    key: copy.key,
+  })
 }
 
 function askToDeleteCopy(copy: RecoveryCopy) {
@@ -268,22 +287,31 @@ function copyDomId(copy: RecoveryCopy) {
       role="group"
       aria-labelledby="import-review-heading"
     >
-      <h3 id="import-review-heading" class="font-semibold focus:outline-none" tabindex="-1">
-        „{{ pendingImport.name }}“ importieren?
+      <h3
+        id="import-review-heading"
+        class="font-semibold break-words focus:outline-none"
+        tabindex="-1"
+      >
+        „{{ pendingImport.name }}“
+        {{ pendingImport.source.kind === 'file' ? 'importieren' : 'wiederherstellen' }}?
       </h3>
       <dl class="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-        <dt class="font-medium">Backup:</dt>
+        <dt class="font-medium">
+          {{ pendingImport.source.kind === 'file' ? 'Backup' : 'Kopie' }}:
+        </dt>
         <dd>{{ describeSummary(pendingImport.summary) }}</dd>
-        <template v-if="pendingImport.exportedAt">
-          <dt class="font-medium">Erstellt:</dt>
-          <dd>{{ dateTimeFormatter.format(new Date(pendingImport.exportedAt)) }}</dd>
+        <template v-if="pendingImport.savedAt">
+          <dt class="font-medium">Stand:</dt>
+          <dd>{{ formatDateTime(pendingImport.savedAt) }}</dd>
         </template>
         <dt class="font-medium">Aktuell:</dt>
         <dd>{{ describeSummary(currentSummary) }}</dd>
       </dl>
       <p v-if="pendingImport.skipped > 0" class="mt-2">
-        {{ pendingImport.skipped }} ungültige
-        {{ pendingImport.skipped === 1 ? 'Eintrag wird' : 'Einträge werden' }} übersprungen.
+        {{ describeSkipped(pendingImport.skipped, true) }}
+      </p>
+      <p v-else-if="pendingImport.corrections > 0" class="mt-2">
+        Einige Angaben, etwa ungültige Links, werden beim Übernehmen korrigiert.
       </p>
       <p class="mt-2">
         Die derzeitigen Trainingsdaten auf diesem Gerät werden vollständig ersetzt. Eine Kopie des
@@ -315,7 +343,8 @@ function copyDomId(copy: RecoveryCopy) {
     </div>
 
     <p v-if="dataError" class="mt-3 text-sm text-red-700" role="alert">{{ dataError }}</p>
-    <p class="mt-3 text-sm text-green-800 empty:hidden" aria-live="polite">{{ dataStatus }}</p>
+    <!-- Always rendered (never display:none) so screen readers announce new messages. -->
+    <p class="text-sm text-green-800 [&:not(:empty)]:mt-3" aria-live="polite">{{ dataStatus }}</p>
 
     <div v-if="gymStore.recoveryCopies.length > 0" class="mt-6 border-t border-gray-100 pt-4">
       <h3 class="font-semibold text-gray-900">Gesicherte Kopien auf diesem Gerät</h3>
@@ -328,8 +357,12 @@ function copyDomId(copy: RecoveryCopy) {
           :key="copy.key"
           class="rounded-lg border border-gray-200 p-3 text-sm"
         >
-          <p class="font-medium text-gray-900">{{ copy.label }}</p>
-          <p class="text-gray-600">{{ formatSize(copy.size) }}</p>
+          <p class="font-medium break-words text-gray-900">{{ copy.label }}</p>
+          <p class="text-gray-600">
+            {{ formatSize(copy.size) }}
+            <template v-if="copy.savedAt"> · Stand {{ formatDateTime(copy.savedAt) }}</template>
+            <template v-if="!copy.restorable"> · nicht lesbar, nur zum Herunterladen</template>
+          </p>
 
           <div
             v-if="confirmDeleteCopyKey === copy.key"
@@ -367,6 +400,7 @@ function copyDomId(copy: RecoveryCopy) {
               Herunterladen
             </button>
             <button
+              v-if="copy.restorable"
               type="button"
               class="min-h-11 rounded-lg border border-gray-500 bg-white px-3 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
               :aria-label="`${copy.label} wiederherstellen`"

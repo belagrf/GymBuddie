@@ -161,7 +161,11 @@ function closeExerciseForm(categoryId: string) {
 
 function handleExerciseDeleted(categoryId: string, exerciseName: string) {
   showPageStatus(`Übung „${exerciseName}“ gelöscht.`)
-  void focusById(`add-exercise-btn-${categoryId}`)
+  void focusById(
+    `add-exercise-btn-${categoryId}`,
+    `new-exercise-name-${categoryId}`,
+    `category-toggle-${categoryId}`,
+  )
 }
 
 function handleAddExercise(categoryId: string) {
@@ -415,7 +419,7 @@ function handleAddExercise(categoryId: string) {
               role="group"
               :aria-label="`Löschen der Kategorie ${category.name} bestätigen`"
             >
-              <p>
+              <p class="break-words">
                 Kategorie „{{ category.name }}“ mit {{ category.exercises.length }}
                 {{ category.exercises.length === 1 ? 'Übung' : 'Übungen' }} und der gesamten
                 Historie wirklich löschen?
@@ -483,8 +487,8 @@ function handleAddExercise(categoryId: string) {
                     @submit.prevent="handleAddExercise(category.id)"
                     @keydown.esc="closeExerciseForm(category.id)"
                   >
-                    <fieldset>
-                      <legend class="font-semibold text-gray-900">
+                    <fieldset class="min-w-0">
+                      <legend class="font-semibold break-words text-gray-900">
                         Neue Übung in {{ category.name }}
                       </legend>
                       <div class="mt-2 space-y-3">

@@ -8,11 +8,13 @@ import {
   createGymDataEnvelope,
   createGymDataExport,
   isCalendarDateKey,
+  inspectRecoveryCopy,
   isSafeId,
   isValidSetValues,
   normalizeVideoUrl,
   parseBackupFile,
   parseGymData,
+  parseRecoveryCopy,
   summarizeCategories,
   toLocalDateKey,
   type Category,
@@ -87,6 +89,14 @@ describe('gym data domain', () => {
     expect(normalizeVideoUrl('youtube.com/watch?v=abc')).toBe('https://youtube.com/watch?v=abc')
     expect(normalizeVideoUrl('www.example.com')).toBe('https://www.example.com/')
     expect(normalizeVideoUrl('youtube.com:443/watch')).toBe('https://youtube.com/watch')
+  })
+
+  it('does not turn numbers typed into the link field into IP addresses', () => {
+    expect(normalizeVideoUrl('42')).toBeNull()
+    expect(normalizeVideoUrl('12,5')).toBeNull()
+    expect(normalizeVideoUrl('0x1')).toBeNull()
+    expect(normalizeVideoUrl('1.2.3.4')).toBeNull()
+    expect(normalizeVideoUrl('http://1.2.3.4/video')).toBe('http://1.2.3.4/video')
   })
 
   it('checks the length of the canonical URL, so normalizing twice gives the same result', () => {
@@ -271,8 +281,9 @@ describe('gym data domain', () => {
       expect(parseBackupFile(JSON.stringify(exported))).toMatchObject({
         ok: true,
         summary: { categories: 1, exercises: 1, sets: 2 },
-        exportedAt: '2026-07-13T10:00:00.000Z',
+        savedAt: '2026-07-13T10:00:00.000Z',
         issues: [],
+        skipped: 0,
       })
     })
 
@@ -292,9 +303,92 @@ describe('gym data domain', () => {
       expect(parseBackupFile(contents).ok).toBe(false)
     })
 
-    it('ignores an export date that is not a date', () => {
-      const backup = { ...createGymDataEnvelope([category()]), exportedAt: 'yesterday' }
-      expect(parseBackupFile(JSON.stringify(backup))).toMatchObject({ ok: true, exportedAt: null })
+    it('falls back to the last save time when the export date is not a date', () => {
+      const backup = {
+        ...createGymDataEnvelope([category()], '2026-07-01T08:00:00.000Z'),
+        exportedAt: 'yesterday',
+      }
+      expect(parseBackupFile(JSON.stringify(backup))).toMatchObject({
+        ok: true,
+        savedAt: '2026-07-01T08:00:00.000Z',
+      })
     })
+  })
+
+  it('counts dropped entries separately from corrections', () => {
+    const result = parseGymData(
+      JSON.stringify([
+        {
+          id: 'push',
+          name: 'Push',
+          exercises: [
+            {
+              id: 'bench',
+              name: 'Bankdrücken',
+              videoUrl: 'ftp://nope',
+              history: [
+                {
+                  date: '2026-07-12',
+                  sets: [
+                    { id: 'ok', weight: 60, reps: 8 },
+                    { id: 'bad-1', weight: -1, reps: 8 },
+                    { id: 'bad-2', weight: 60, reps: 0 },
+                  ],
+                },
+                { date: 'gestern', sets: [] },
+              ],
+            },
+            { id: 'nameless', name: ' ', history: [] },
+          ],
+        },
+      ]),
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // Two sets, one session, and one exercise were dropped; the removed link is a correction.
+    expect(result.skipped).toBe(4)
+    expect(result.issues.length).toBe(5)
+  })
+
+  describe('recovery copies', () => {
+    it('restores the legacy array format that file imports reject', () => {
+      const legacy = JSON.stringify([category()])
+      expect(parseBackupFile(legacy).ok).toBe(false)
+      expect(parseRecoveryCopy(legacy)).toMatchObject({ ok: true, savedAt: null })
+      expect(parseRecoveryCopy('{broken').ok).toBe(false)
+      expect(parseRecoveryCopy('[]').ok).toBe(false)
+    })
+
+    it('inspects copies cheaply for the list', () => {
+      expect(inspectRecoveryCopy(JSON.stringify([category()]))).toEqual({
+        savedAt: null,
+        restorable: true,
+      })
+      expect(
+        inspectRecoveryCopy(
+          JSON.stringify(createGymDataEnvelope([category()], '2026-07-01T08:00:00.000Z')),
+        ),
+      ).toEqual({ savedAt: '2026-07-01T08:00:00.000Z', restorable: true })
+      expect(inspectRecoveryCopy('{broken')).toEqual({ savedAt: null, restorable: false })
+      expect(inspectRecoveryCopy('[]').restorable).toBe(false)
+      expect(
+        inspectRecoveryCopy(
+          JSON.stringify({ app: 'GymBuddie', version: 3, categories: [category()] }),
+        ).restorable,
+      ).toBe(false)
+    })
+  })
+
+  it('classifies only genuinely newer versions as unsupported', () => {
+    expect(parseGymData(JSON.stringify({ version: 3, categories: [] }))).toMatchObject({
+      reason: 'unsupported-version',
+    })
+    for (const version of ['2', 1, null, 0, 2.5]) {
+      expect(parseGymData(JSON.stringify({ version, categories: [] }))).toMatchObject({
+        ok: false,
+        reason: 'invalid-format',
+      })
+    }
   })
 })

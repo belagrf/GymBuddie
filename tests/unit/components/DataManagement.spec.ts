@@ -9,7 +9,13 @@ import {
   MAX_IMPORT_BYTES,
   type Category,
 } from '@/domain/gymData'
-import { GYM_STORAGE_KEY, PRE_IMPORT_BACKUP_KEY, useGymStore } from '@/stores/gymStore'
+import {
+  GYM_STORAGE_KEY,
+  LEGACY_BACKUP_KEY,
+  PRE_IMPORT_BACKUP_KEY,
+  RECOVERY_BACKUP_KEY,
+  useGymStore,
+} from '@/stores/gymStore'
 
 const current: Category = { id: 'push', name: 'Push', exercises: [] }
 const incoming: Category = {
@@ -115,5 +121,71 @@ describe('DataManagement', () => {
     expect(useGymStore().lastExportAt).not.toBeNull()
     expect(wrapper.text()).toContain('Letztes Backup:')
     vi.useRealTimers()
+  })
+
+  it('restores the legacy original copy through the review', async () => {
+    localStorage.setItem(LEGACY_BACKUP_KEY, JSON.stringify([incoming]))
+    wrapper = mount(DataManagement, { attachTo: document.body })
+
+    await wrapper.get(`[aria-label$="Speicherformat wiederherstellen"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#import-review-heading').text()).toContain('wiederherstellen?')
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Daten ersetzen')
+      ?.trigger('click')
+    expect(useGymStore().categories.map((category) => category.name)).toEqual(['Pull'])
+    expect(wrapper.text()).toContain('Kopie wiederhergestellt: 1 Kategorie, 1 Übung, 1 Satz.')
+  })
+
+  it('offers unreadable copies only for download', () => {
+    localStorage.setItem(RECOVERY_BACKUP_KEY, '{broken')
+    wrapper = mount(DataManagement)
+
+    expect(wrapper.text()).toContain('nicht lesbar, nur zum Herunterladen')
+    expect(wrapper.find('[aria-label$="wiederherstellen"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label$="herunterladen"]').exists()).toBe(true)
+  })
+
+  it('deletes a copy only after confirmation', async () => {
+    localStorage.setItem(PRE_IMPORT_BACKUP_KEY, JSON.stringify(createGymDataEnvelope([current])))
+    wrapper = mount(DataManagement, { attachTo: document.body })
+
+    await wrapper.get('[aria-label="Datenstand vor dem letzten Import löschen"]').trigger('click')
+    await flushPromises()
+    expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).not.toBeNull()
+    expect(document.activeElement?.id).toMatch(/^delete-copy-cancel-/)
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Löschen')
+      ?.trigger('click')
+    await flushPromises()
+    expect(localStorage.getItem(PRE_IMPORT_BACKUP_KEY)).toBeNull()
+    expect(document.activeElement?.id).toBe('data-heading')
+    expect(wrapper.text()).toContain('Kopie wurde gelöscht.')
+  })
+
+  it('does not claim a snapshot when the device had no data', async () => {
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(DataManagement, { attachTo: document.body })
+
+    await selectFile(wrapper, JSON.stringify(createGymDataExport([incoming])))
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Daten ersetzen')
+      ?.trigger('click')
+
+    expect(wrapper.text()).toContain('Backup importiert')
+    expect(wrapper.text()).not.toContain('Kopie gesichert')
+  })
+
+  it('keeps its status live region rendered while empty', () => {
+    wrapper = mount(DataManagement)
+    const region = wrapper.get('[aria-live="polite"]')
+    expect(region.text()).toBe('')
+    expect(region.classes()).not.toContain('empty:hidden')
   })
 })

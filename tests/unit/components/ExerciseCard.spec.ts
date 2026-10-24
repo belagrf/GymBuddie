@@ -205,4 +205,56 @@ describe('ExerciseCard', () => {
     await flushPromises()
     expect(activeId()).toBe('weight-exercise-1')
   })
+
+  it('saves a quick second set when its repetitions are filled in', async () => {
+    seed()
+    wrapper = mountCard()
+    const store = useGymStore()
+
+    await wrapper.get('#weight-exercise-1').setValue('70')
+    await wrapper.get('#reps-exercise-1').setValue('5')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('#reps-exercise-1').setValue('4')
+    await wrapper.get('form').trigger('submit')
+
+    expect(store.categories[0]?.exercises[0]?.history[0]?.sets.map((set) => set.reps)).toEqual([
+      4, 5,
+    ])
+  })
+
+  it('submits on Enter in the weight field when repetitions are already filled', async () => {
+    seed()
+    wrapper = mountCard()
+    const store = useGymStore()
+
+    await wrapper.get('#reps-exercise-1').setValue('5')
+    await wrapper.get('#weight-exercise-1').setValue('70')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', cancelable: true })
+    wrapper.get('#weight-exercise-1').element.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    expect(store.categories[0]?.exercises[0]?.history[0]?.sets).toHaveLength(1)
+  })
+
+  it('announces an identical status again', async () => {
+    seed()
+    wrapper = mountCard()
+    const region = wrapper.get('form [aria-live="polite"]').element
+    const texts: string[] = []
+    const observer = new MutationObserver(() => texts.push(region.textContent ?? ''))
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      vi.setSystemTime(new Date(2026, 6, 13, 18, attempt))
+      await wrapper.get('#weight-exercise-1').setValue('60')
+      await wrapper.get('#reps-exercise-1').setValue('10')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+    }
+
+    observer.disconnect()
+    const announced = texts.filter((text) => text.startsWith('Satz gespeichert'))
+    expect(announced.length).toBeGreaterThanOrEqual(2)
+  })
 })
