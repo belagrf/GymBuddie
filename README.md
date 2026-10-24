@@ -62,6 +62,9 @@ bereitsteht, bietet die App ein kontrolliertes Update an.
 | Externe Anleitungslinks öffnen      | Nein                                    |
 | Erstinstallation und App-Updates    | Benötigen eine Internetverbindung       |
 
+Unterstützt werden aktuelle Versionen von Chrome, Edge, Firefox und Safari, auf iPhone und iPad ab
+iOS 15.4.
+
 ### Installation
 
 1. [GymBuddie im Browser öffnen](https://belagrf.github.io/GymBuddie/).

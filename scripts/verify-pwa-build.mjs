@@ -70,6 +70,16 @@ if (!serviceWorker.includes('index.html')) {
 }
 
 const assetsDirectory = resolve(dist, 'assets')
+
+// Safari before 16.4 ignores range media queries such as (width >= 40rem), which would silently
+// drop every responsive layout on older iPhones. The build target must lower them to min-width.
+for (const file of (await readdir(assetsDirectory)).filter((name) => name.endsWith('.css'))) {
+  const css = await readFile(resolve(assetsDirectory, file), 'utf8')
+  const rangeQuery = /@media[^{]*\((?:width|height)\s*[<>]/.exec(css)
+  if (rangeQuery) {
+    fail(`${file} contains a range media query (${rangeQuery[0]}), unsupported before Safari 16.4`)
+  }
+}
 const applicationScripts = (await readdir(assetsDirectory)).filter((file) => file.endsWith('.js'))
 const applicationCode = (
   await Promise.all(

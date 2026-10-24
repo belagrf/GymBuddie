@@ -12,6 +12,13 @@ const base = resolveBasePath()
 export default defineConfig({
   base,
 
+  build: {
+    // Vite 8 defaults to Safari 16.4. Keep supporting iOS 15.4+ (the floor Tailwind's CSS
+    // fallbacks allow): without this, breakpoint media queries ship in range syntax, which
+    // older Safari ignores. CSS uses the same target.
+    target: ['chrome111', 'edge111', 'firefox114', 'safari15.4', 'ios15.4'],
+  },
+
   plugins: [
     vue(),
     tailwindcss(),
