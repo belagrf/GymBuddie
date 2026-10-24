@@ -29,7 +29,7 @@
     "lockfile:check": "npm ci --dry-run --ignore-scripts --no-audit --no-fund"
   },
   "dependencies": {
-    "pinia": "^3.0.4",
+    "pinia": "^4.1.0",
     "vue": "^3.5.44",
     "vue-router": "^4.6.4"
   },
