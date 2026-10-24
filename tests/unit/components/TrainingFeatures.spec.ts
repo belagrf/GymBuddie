@@ -59,6 +59,12 @@ function button(wrapper: VueWrapper, text: string | RegExp) {
 
 let wrapper: VueWrapper | undefined
 
+/** jsdom has no PointerEvent; a plain event carrying the pointer fields is enough here. */
+async function pointer(target: Element, type: string, fields: Record<string, unknown>) {
+  target.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), fields))
+  await flushPromises()
+}
+
 beforeEach(() => {
   localStorage.clear()
   setActivePinia(createPinia())
@@ -340,5 +346,201 @@ describe('reorder list', () => {
     expect(useGymStore().categories.map((category) => category.id)).toEqual(['pull', 'push'])
     expect(document.activeElement?.id).toBe('move-category-up-pull')
     expect(wrapper.get('#move-category-up-pull').attributes('aria-disabled')).toBe('true')
+  })
+})
+
+describe('review follow-ups', () => {
+  it('lets an explicit collapse win over the "trained today" default, also after a reload', async () => {
+    seed([benchCategory([{ date: TODAY, sets: [{ id: 't1', weight: 60, reps: 8 }] }, ...history])])
+    wrapper = mountCard()
+    await wrapper.get('#exercise-toggle-bench').trigger('click')
+    expect(wrapper.get('#exercise-toggle-bench').attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+
+    setActivePinia(createPinia())
+    wrapper = mountCard()
+    expect(wrapper.get('#exercise-toggle-bench').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('shows "Rekord" in the summary only when a set beat an earlier one', () => {
+    seed([benchCategory([{ date: '2026-07-10', sets: [{ id: 'one', weight: 80, reps: 5 }] }])])
+    wrapper = mountCard()
+    expect(wrapper.get('#exercise-toggle-bench').text()).not.toContain('Rekord')
+  })
+
+  it('suggests last time’s final set once today has more sets than last time', () => {
+    seed([
+      benchCategory([
+        {
+          date: TODAY,
+          sets: [
+            { id: 't2', weight: 60, reps: 8 },
+            { id: 't1', weight: 60, reps: 8 },
+          ],
+        },
+        { date: '2026-07-10', sets: [{ id: 'l1', weight: 55, reps: 10 }] },
+      ]),
+    ])
+    wrapper = mountCard()
+    expect(button(wrapper, /^Wiederholen:/).text()).toContain('55 kg × 10')
+  })
+
+  it('keeps a tapped chart point selected on touch and does not jump to the latest day', async () => {
+    const series = progressSeries(history)
+    wrapper = mount(ProgressChart, {
+      props: { chartId: 't', exerciseName: 'Bankdrücken', ...series },
+      attachTo: document.body,
+    })
+    const svg = wrapper.get('svg')
+    vi.spyOn(svg.element, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 320,
+      height: 150,
+      right: 320,
+      bottom: 150,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+
+    await pointer(svg.element, 'pointerdown', { clientX: 40, pointerType: 'touch' })
+    await pointer(svg.element, 'pointerleave', { pointerType: 'touch' })
+    await svg.trigger('focus')
+    expect(wrapper.get('#t-readout').text()).toContain('06.07.2026')
+
+    await pointer(svg.element, 'pointerleave', { pointerType: 'mouse' })
+    expect(wrapper.get('#t-readout').text()).toBe('')
+  })
+
+  it('charts repetitions with whole-number ticks', () => {
+    wrapper = mount(ProgressChart, {
+      props: {
+        chartId: 'r',
+        exerciseName: 'Klimmzüge',
+        metric: 'reps',
+        points: [
+          { date: '2026-07-01', value: 8, weight: 0, reps: 8 },
+          { date: '2026-07-05', value: 9, weight: 0, reps: 9 },
+        ],
+      },
+    })
+    const labels = wrapper.findAll('svg text').map((text) => text.text())
+    expect(labels.some((label) => /[.,]5/.test(label))).toBe(false)
+  })
+
+  it('announces the end of a rest in the live region and returns focus after "Stopp"', async () => {
+    vi.useFakeTimers()
+    seed([benchCategory()])
+    useUiStore().setExerciseOpen('bench', true)
+    const card = mountCard()
+    wrapper = mount(RestTimerBar, { attachTo: document.body })
+
+    card.get('#weight-bench').setValue('50')
+    card.get('#reps-bench').setValue('5')
+    const save = button(card, 'Satz speichern')
+    ;(save.element as HTMLButtonElement).focus()
+    await card.get('form:not([id])').trigger('submit')
+    await flushPromises()
+
+    const stop = button(wrapper, 'Stopp')
+    ;(stop.element as HTMLButtonElement).focus()
+    await stop.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(save.element)
+
+    useRestTimerStore().start(5)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(wrapper.get('[aria-live="polite"]').text()).toBe('Pause vorbei – nächster Satz!')
+    card.unmount()
+  })
+
+  it('treats a restored backup as a fresh baseline for the reminder', () => {
+    seed([benchCategory()], '2026-07-12T10:00:00.000Z')
+    localStorage.setItem('gymbuddie:meta:last-import', '2026-07-12T10:00:00.000Z')
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    expect(wrapper.find('section').exists()).toBe(false)
+  })
+
+  it('keeps the snooze across a reload and shows the reminder again when it expires', async () => {
+    seed([benchCategory()])
+    localStorage.setItem(LAST_EXPORT_KEY, '2026-06-20T10:00:00.000Z')
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    await button(wrapper, 'Später').trigger('click')
+    wrapper.unmount()
+
+    setActivePinia(createPinia())
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    expect(wrapper.find('section').exists()).toBe(false)
+    wrapper.unmount()
+
+    vi.setSystemTime(new Date(2026, 6, 16, 18, 1))
+    setActivePinia(createPinia())
+    wrapper = mount(BackupReminder, { props: { today: '2026-07-16' } })
+    expect(wrapper.find('section').exists()).toBe(true)
+  })
+
+  it('reminds exactly from the 14th day after the last backup, counting from the first set otherwise', () => {
+    seed([benchCategory()])
+    localStorage.setItem(LAST_EXPORT_KEY, new Date(2026, 5, 30, 18, 1).toISOString())
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    expect(wrapper.find('section').exists()).toBe(false)
+    wrapper.unmount()
+
+    setActivePinia(createPinia())
+    localStorage.setItem(LAST_EXPORT_KEY, new Date(2026, 5, 29, 18, 0).toISOString())
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    expect(wrapper.find('section').exists()).toBe(true)
+    wrapper.unmount()
+
+    setActivePinia(createPinia())
+    localStorage.removeItem(LAST_EXPORT_KEY)
+    seed([
+      benchCategory([
+        { date: '2026-07-12', sets: [{ id: 'n', weight: 50, reps: 8 }] },
+        { date: '2026-06-01', sets: [{ id: 'o', weight: 50, reps: 8 }] },
+      ]),
+    ])
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+    expect(wrapper.text()).toContain('Du hast noch kein Backup erstellt.')
+  })
+
+  it('falls back to a download when the share sheet fails', async () => {
+    seed([benchCategory([{ date: '2026-06-01', sets: [{ id: 'old', weight: 50, reps: 8 }] }])])
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      canShare: () => true,
+      share: vi.fn().mockRejectedValue(new DOMException('blocked', 'NotAllowedError')),
+    })
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fallback')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    wrapper = mount(BackupReminder, { props: { today: TODAY } })
+
+    await button(wrapper, 'Backup teilen').trigger('click')
+    await flushPromises()
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(useGymStore().lastExportAt).not.toBeNull()
+  })
+
+  it('keeps focus on the moved exercise in the reorder list', async () => {
+    seed([
+      {
+        id: 'push',
+        name: 'Push',
+        exercises: [
+          { id: 'bench', name: 'Bankdrücken', history: [] },
+          { id: 'dips', name: 'Dips', history: [] },
+        ],
+      },
+    ])
+    wrapper = mount(ReorderList, { attachTo: document.body })
+    await wrapper.get('[aria-label="Übung Dips nach oben"]').trigger('click')
+    await flushPromises()
+    expect(document.activeElement?.id).toBe('move-exercise-up-dips')
+    expect(useGymStore().categories[0]?.exercises.map((exercise) => exercise.id)).toEqual([
+      'dips',
+      'bench',
+    ])
   })
 })

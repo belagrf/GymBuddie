@@ -29,7 +29,7 @@ import {
   normalizeVideoUrl,
   useGymStore,
 } from '@/stores/gymStore'
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 
 const INITIAL_VISIBLE_SESSIONS = 3
 const SESSIONS_PER_PAGE = 10
@@ -103,9 +103,11 @@ const todaySession = computed(() =>
 // Open by default while the exercise is being trained today; an explicit choice always wins.
 const open = computed(() => uiStore.exerciseOpenChoice(id.value) ?? Boolean(todaySession.value))
 const showChart = ref(false)
+const formEnd = ref<HTMLElement | null>(null)
 
+// The newest session that is not today's: the same session the collapsed summary describes.
 const previousSession = computed(() =>
-  props.exercise.history.find((session) => session.date < props.today),
+  props.exercise.history.find((session) => session.date !== props.today),
 )
 /** Last time's sets in the order they were done. */
 const previousSets = computed(() => [...(previousSession.value?.sets ?? [])].reverse())
@@ -239,6 +241,12 @@ function handleLogSet() {
   else clearRecord()
   showSetStatus(`Satz gespeichert: ${formatWeight(weight)} kg × ${reps} Wdh.`)
   if (settingsStore.settings.restAutoStart) restTimer.start()
+  // Keep the save button and a record message clear of the timer bar (html scroll-padding).
+  void nextTick(() => {
+    if (typeof formEnd.value?.scrollIntoView === 'function') {
+      formEnd.value.scrollIntoView({ block: 'nearest' })
+    }
+  })
 }
 
 function startRest() {
@@ -740,7 +748,7 @@ function handleDeleteSet(setId: string) {
         </div>
         <p class="sr-only" aria-live="polite">{{ setStatus }}</p>
         <!-- Always rendered, so the record announcement is read out when it appears. -->
-        <div aria-live="polite">
+        <div ref="formEnd" aria-live="polite">
           <p
             v-if="recordMessage"
             class="mt-3 flex items-center gap-2 rounded-lg border border-warn-line bg-record-tint px-3 py-2 font-semibold text-record-fg"

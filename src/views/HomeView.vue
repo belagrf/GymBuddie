@@ -10,11 +10,17 @@ import { focusById } from '@/composables/focus'
 import { useToday } from '@/composables/useToday'
 import { useTransientMessage } from '@/composables/useTransientMessage'
 import { MAX_NAME_LENGTH, normalizeVideoUrl, useGymStore } from '@/stores/gymStore'
+import { useRestTimerStore } from '@/stores/restTimerStore'
 import { useUiStore } from '@/stores/uiStore'
 import { computed, reactive, ref, watch } from 'vue'
 
 const gymStore = useGymStore()
 const uiStore = useUiStore()
+const restTimer = useRestTimerStore()
+// Extra room at the bottom so the timer bar (and the update toast above it) never covers content.
+const bottomSpace = computed(() =>
+  restTimer.running || restTimer.finishedAt !== null ? 'pb-72' : 'pb-32',
+)
 const today = useToday()
 const reorderMode = ref(false)
 
@@ -70,6 +76,8 @@ watch(
       (category) => `${category.id}:${category.exercises.map((exercise) => exercise.id).join(',')}`,
     ),
   () => {
+    // Data hidden by a load error or a write block is not "deleted": keep its view state.
+    if (gymStore.writeBlock !== null || gymStore.persistenceStatus === 'error') return
     const categoryIds = new Set(gymStore.categories.map((category) => category.id))
     const exerciseIds = new Set(
       gymStore.categories.flatMap((category) => category.exercises.map((exercise) => exercise.id)),
@@ -225,7 +233,7 @@ function handleAddExercise(categoryId: string) {
 
 <template>
   <main class="min-h-screen bg-page font-sans text-fg">
-    <div class="mx-auto w-full max-w-4xl px-3 pt-5 pb-32 sm:px-6 sm:pt-7">
+    <div class="mx-auto w-full max-w-4xl px-3 pt-5 sm:px-6 sm:pt-7" :class="bottomSpace">
       <header class="mb-7">
         <h1 class="break-words text-4xl font-bold tracking-tight text-fg">GymBuddie</h1>
         <p v-if="totalSetsToday > 0" class="mt-1 text-fg-muted">
@@ -240,7 +248,11 @@ function handleAddExercise(categoryId: string) {
       <BackupReminder :today="today" />
 
       <section aria-labelledby="new-category-heading" class="mb-8">
-        <h2 id="new-category-heading" class="mb-2 text-lg font-bold text-fg">
+        <h2
+          id="new-category-heading"
+          class="mb-2 text-lg font-bold text-fg focus:outline-none"
+          tabindex="-1"
+        >
           Trainingskategorie hinzufügen
         </h2>
         <form novalidate @submit.prevent="handleAddCategory">
@@ -280,9 +292,19 @@ function handleAddExercise(categoryId: string) {
 
       <section aria-labelledby="training-heading">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 id="training-heading" class="text-2xl font-bold text-fg">Dein Training</h2>
+          <h2
+            id="training-heading"
+            class="text-2xl font-bold text-fg focus:outline-none"
+            tabindex="-1"
+          >
+            Dein Training
+          </h2>
           <button
-            v-if="gymStore.categories.length > 1 || gymStore.categories[0]?.exercises.length"
+            v-if="
+              reorderMode ||
+              gymStore.categories.length > 1 ||
+              gymStore.categories[0]?.exercises.length
+            "
             id="reorder-toggle"
             type="button"
             class="min-h-11 rounded-lg border border-line-strong bg-surface px-3 text-sm font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"

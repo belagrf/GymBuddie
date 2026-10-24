@@ -342,18 +342,31 @@ for (const colorScheme of ['light', 'dark'] as const) {
 }
 
 test('runs the rest timer after a set and stops it on request', async ({ page }) => {
+  // A controlled clock keeps the countdown deterministic under load.
+  await page.clock.install()
   await seedTraining(page)
   await page.locator('#exercise-toggle-dips').click()
   await page.locator('#weight-dips').fill('0')
   await page.locator('#reps-dips').fill('12')
+  await page.clock.pauseAt(new Date(Date.now() + 1_000))
   await page.getByRole('button', { name: 'Satz speichern' }).click()
 
   const timer = page.getByRole('timer')
   await expect(timer).toHaveText('1:30')
   await page.getByRole('button', { name: 'Pause um 30 Sekunden verlängern' }).click()
-  await expect(timer).toHaveText(/^(2:00|1:59)$/)
+  await expect(timer).toHaveText('2:00')
+  await page.clock.runFor(60_000)
+  await expect(timer).toHaveText('1:00')
   await page.getByRole('button', { name: 'Stopp' }).click()
   await expect(page.getByRole('timer')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Satz speichern' }).click()
+  await page.locator('#reps-dips').fill('10')
+  await page.getByRole('button', { name: 'Satz speichern' }).click()
+  await page.clock.runFor(91_000)
+  await expect(page.getByRole('region', { name: 'Pausentimer' })).toContainText(
+    'Pause vorbei – nächster Satz!',
+  )
 })
 
 test('reorders categories by keyboard and keeps the order after a reload', async ({ page }) => {
@@ -363,6 +376,7 @@ test('reorders categories by keyboard and keeps the order after a reload', async
   await page.keyboard.press('Enter')
   expect(await focusedElement(page)).toBe('move-category-up-pull')
   await page.getByRole('button', { name: 'Übung Dips nach oben' }).click()
+  expect(await focusedElement(page)).toBe('move-exercise-up-dips')
   await page.locator('#reorder-toggle').click()
 
   await page.reload()
@@ -385,3 +399,61 @@ test('applies the chosen theme before the app loads and remembers open cards', a
   await expect(page.locator('#exercise-toggle-bench')).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('#exercise-toggle-dips')).toHaveAttribute('aria-expanded', 'false')
 })
+
+for (const [saved, system, expected] of [
+  ['dark', 'light', true],
+  ['light', 'dark', false],
+  [null, 'dark', true],
+  [null, 'light', false],
+] as const) {
+  test(`inline theme script: saved ${saved ?? 'nothing'}, system ${system}`, async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ colorScheme: system })
+    const page = await context.newPage()
+    await page.goto('./')
+    await page.evaluate((theme) => {
+      localStorage.clear()
+      if (theme) localStorage.setItem('gymbuddie:settings:v1', JSON.stringify({ theme }))
+    }, saved)
+    // Without the app bundle, only the inline script in index.html can set the class.
+    await page.route('**/assets/*.js', (route) => route.abort())
+    await page.reload()
+    expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(
+      expected,
+    )
+    await context.close()
+  })
+}
+
+test('selects the tapped day in the progress chart on a touch screen', async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 375, height: 800 },
+    hasTouch: true,
+    isMobile: true,
+  })
+  const page = await context.newPage()
+  await seedTraining(page)
+  await page.locator('#exercise-toggle-bench').tap()
+  await page.locator('#chart-toggle-bench').tap()
+
+  const svg = page.locator('figure svg')
+  const box = await svg.boundingBox()
+  if (!box) throw new Error('Chart not rendered')
+  // The oldest point sits at the left edge of the plot area.
+  await page.touchscreen.tap(box.x + 42, box.y + box.height / 2)
+  const readout = page.locator('figure > p').first()
+  await expect(readout).toContainText(daysAgoGerman(7))
+  await page.touchscreen.tap(box.x + box.width - 16, box.y + box.height / 2)
+  await expect(readout).toContainText(daysAgoGerman(3))
+
+  // The readout stays inside the card at phone width.
+  const readoutBox = await readout.boundingBox()
+  expect(readoutBox && readoutBox.x + readoutBox.width).toBeLessThanOrEqual(375)
+  await context.close()
+})
+
+function daysAgoGerman(days: number) {
+  const [year, month, day] = daysAgo(days).split('-')
+  return `${day}.${month}.${year}`
+}

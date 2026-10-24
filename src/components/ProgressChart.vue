@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { formatDateKey, formatWeight } from '@/domain/format'
 import { roundEstimate, type ProgressPoint } from '@/domain/stats'
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   chartId: string
@@ -10,13 +10,32 @@ const props = defineProps<{
   points: ProgressPoint[]
 }>()
 
-const WIDTH = 320
 const HEIGHT = 150
-const PAD = { top: 14, right: 14, bottom: 24, left: 40 }
+const PAD = { top: 12, right: 14, bottom: 24, left: 40 }
 const DAY_MS = 24 * 60 * 60 * 1000
+
+// The viewBox follows the rendered width, so one unit is one CSS pixel and labels keep their size.
+const container = ref<HTMLElement | null>(null)
+const width = ref(320)
+let resizeObserver: ResizeObserver | null = null
 
 const selectedIndex = ref<number | null>(null)
 const showTable = ref(false)
+let focusFromPointer = false
+
+onMounted(() => {
+  const element = container.value
+  if (!element) return
+  if (element.clientWidth > 0) width.value = element.clientWidth
+  if (typeof ResizeObserver === 'undefined') return
+  resizeObserver = new ResizeObserver(([entry]) => {
+    const next = Math.round(entry?.contentRect.width ?? 0)
+    if (next > 0) width.value = next
+  })
+  resizeObserver.observe(element)
+})
+
+onBeforeUnmount(() => resizeObserver?.disconnect())
 
 function dayNumber(dateKey: string) {
   const [year, month, day] = dateKey.split('-').map(Number)
@@ -28,7 +47,8 @@ function formatValue(value: number) {
 }
 
 function niceStep(range: number) {
-  const steps = props.metric === 'estimate' ? [1, 2.5, 5, 10, 20, 25, 50, 100] : [1, 2, 5, 10, 20]
+  const steps =
+    props.metric === 'estimate' ? [1, 2.5, 5, 10, 20, 25, 50, 100] : [1, 2, 5, 10, 20, 50]
   return steps.find((step) => range / step <= 4) ?? 100
 }
 
@@ -42,7 +62,7 @@ const scale = computed(() => {
   const step = niceStep(Math.max(maxValue - minValue, props.metric === 'estimate' ? 5 : 2))
   const yMin = Math.max(0, Math.floor(minValue / step) * step)
   const yMax = Math.max(yMin + step, Math.ceil(maxValue / step) * step)
-  const innerWidth = WIDTH - PAD.left - PAD.right
+  const innerWidth = Math.max(1, width.value - PAD.left - PAD.right)
   const innerHeight = HEIGHT - PAD.top - PAD.bottom
 
   return {
@@ -80,13 +100,17 @@ const areaPath = computed(() => {
 
 const ticks = computed(() => {
   const { yMin, yMax } = scale.value
-  return [yMin, (yMin + yMax) / 2, yMax].map((value) => ({ value, y: scale.value.y(value) }))
+  const middle = (yMin + yMax) / 2
+  // Repetitions are whole numbers; a "8,5" tick would be meaningless.
+  const values =
+    props.metric === 'reps' && !Number.isInteger(middle) ? [yMin, yMax] : [yMin, middle, yMax]
+  return values.map((value) => ({ value, y: scale.value.y(value) }))
 })
 
 const metricLabel = computed(() =>
   props.metric === 'estimate'
     ? 'Geschätztes Maximum (bester Satz pro Tag)'
-    : 'Wiederholungen (bester Satz pro Tag)',
+    : 'Wiederholungen mit Körpergewicht (bester Satz pro Tag)',
 )
 
 const summary = computed(() => {
@@ -96,28 +120,44 @@ const summary = computed(() => {
   return `${metricLabel.value} für ${props.exerciseName}: von ${formatValue(first.value)} am ${formatDateKey(first.date)} auf ${formatValue(last.value)} am ${formatDateKey(last.date)}, ${props.points.length} Trainingstage.`
 })
 
-const selected = computed(() =>
-  selectedIndex.value === null ? null : (props.points[selectedIndex.value] ?? null),
-)
-const selectedCoordinates = computed(() =>
-  selectedIndex.value === null ? null : (coordinates.value[selectedIndex.value] ?? null),
-)
-const readout = computed(() => {
-  const point = selected.value
-  if (!point) return ''
+const shownIndex = computed(() => selectedIndex.value ?? props.points.length - 1)
+const shown = computed(() => props.points[shownIndex.value] ?? null)
+const shownCoordinates = computed(() => coordinates.value[shownIndex.value] ?? null)
+
+function describe(point: ProgressPoint) {
   return `${formatDateKey(point.date)}: ${formatValue(point.value)} (${formatWeight(point.weight)} kg × ${point.reps} Wdh.)`
+}
+
+const readout = computed(() => {
+  const point = selectedIndex.value === null ? null : props.points[selectedIndex.value]
+  return point ? describe(point) : ''
 })
 
 function selectNearest(event: PointerEvent) {
   const svg = event.currentTarget as SVGSVGElement
   const box = svg.getBoundingClientRect()
   if (box.width === 0) return
-  const x = ((event.clientX - box.left) / box.width) * WIDTH
+  const x = ((event.clientX - box.left) / box.width) * width.value
   let nearest = 0
   coordinates.value.forEach((point, index) => {
     if (Math.abs(point.x - x) < Math.abs((coordinates.value[nearest]?.x ?? 0) - x)) nearest = index
   })
   selectedIndex.value = nearest
+}
+
+function handlePointerDown(event: PointerEvent) {
+  focusFromPointer = true
+  selectNearest(event)
+}
+
+function handlePointerLeave(event: PointerEvent) {
+  // Touch fires pointerleave right after every tap; keep a tapped point until the next tap.
+  if (event.pointerType === 'mouse') selectedIndex.value = null
+}
+
+function handleFocus() {
+  if (!focusFromPointer) selectedIndex.value ??= props.points.length - 1
+  focusFromPointer = false
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -145,18 +185,27 @@ function handleKeydown(event: KeyboardEvent) {
       {{ metricLabel }}
     </figcaption>
 
-    <div class="relative mt-1">
+    <!-- A fixed readout instead of a floating tooltip: it can never be clipped on narrow screens. -->
+    <p v-if="shown" class="mt-1 min-h-6 text-sm text-fg" aria-hidden="true">
+      <strong class="font-semibold tabular-nums">{{ formatValue(shown.value) }}</strong>
+      <span class="text-fg-subtle">
+        · {{ formatWeight(shown.weight) }} kg × {{ shown.reps }} · {{ formatDateKey(shown.date) }}
+      </span>
+    </p>
+
+    <div ref="container" class="mt-1">
       <svg
-        :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
-        class="block h-auto w-full touch-pan-y rounded-lg focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        :viewBox="`0 0 ${width} ${HEIGHT}`"
+        :height="HEIGHT"
+        class="block w-full touch-pan-y rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         role="img"
         tabindex="0"
         :aria-label="summary"
         :aria-describedby="`${chartId}-readout`"
         @pointermove="selectNearest"
-        @pointerdown="selectNearest"
-        @pointerleave="selectedIndex = null"
-        @focus="selectedIndex ??= points.length - 1"
+        @pointerdown="handlePointerDown"
+        @pointerleave="handlePointerLeave"
+        @focus="handleFocus"
         @blur="selectedIndex = null"
         @keydown="handleKeydown"
       >
@@ -165,7 +214,7 @@ function handleKeydown(event: KeyboardEvent) {
             v-for="tick in ticks"
             :key="tick.value"
             :x1="PAD.left"
-            :x2="WIDTH - PAD.right"
+            :x2="width - PAD.right"
             :y1="tick.y"
             :y2="tick.y"
             class="stroke-chart-grid"
@@ -177,18 +226,18 @@ function handleKeydown(event: KeyboardEvent) {
             :x="PAD.left - 6"
             :y="tick.y + 4"
             text-anchor="end"
-            class="fill-fg-subtle text-[10px] tabular-nums"
+            class="fill-fg-subtle text-[11px] tabular-nums"
           >
-            {{ metric === 'estimate' ? formatWeight(tick.value) : tick.value }}
+            {{ formatWeight(tick.value) }}
           </text>
-          <text :x="PAD.left" :y="HEIGHT - 6" class="fill-fg-subtle text-[10px]">
+          <text :x="PAD.left" :y="HEIGHT - 6" class="fill-fg-subtle text-[11px]">
             {{ formatDateKey(points[0]?.date ?? '') }}
           </text>
           <text
-            :x="WIDTH - PAD.right"
+            :x="width - PAD.right"
             :y="HEIGHT - 6"
             text-anchor="end"
-            class="fill-fg-subtle text-[10px]"
+            class="fill-fg-subtle text-[11px]"
           >
             {{ formatDateKey(points.at(-1)?.date ?? '') }}
           </text>
@@ -204,40 +253,24 @@ function handleKeydown(event: KeyboardEvent) {
           />
 
           <line
-            v-if="selectedCoordinates"
-            :x1="selectedCoordinates.x"
-            :x2="selectedCoordinates.x"
+            v-if="selectedIndex !== null && shownCoordinates"
+            :x1="shownCoordinates.x"
+            :x2="shownCoordinates.x"
             :y1="PAD.top"
             :y2="HEIGHT - PAD.bottom"
             class="stroke-fg-subtle"
             stroke-width="1"
           />
           <circle
-            v-for="(point, index) in selectedCoordinates
-              ? [selectedCoordinates]
-              : coordinates.slice(-1)"
-            :key="index"
-            :cx="point.x"
-            :cy="point.y"
+            v-if="shownCoordinates"
+            :cx="shownCoordinates.x"
+            :cy="shownCoordinates.y"
             r="4.5"
             class="fill-chart-line stroke-surface"
             stroke-width="2"
           />
         </g>
       </svg>
-
-      <div
-        v-if="selected && selectedCoordinates"
-        class="pointer-events-none absolute -top-2 z-10 -translate-x-1/2 -translate-y-full rounded-lg border border-line bg-surface px-2 py-1 text-xs whitespace-nowrap text-fg shadow-sm"
-        :style="{ left: `${Math.min(85, Math.max(15, (selectedCoordinates.x / WIDTH) * 100))}%` }"
-        aria-hidden="true"
-      >
-        <strong class="font-semibold">{{ formatValue(selected.value) }}</strong>
-        <span class="text-fg-subtle">
-          · {{ formatWeight(selected.weight) }} kg × {{ selected.reps }} ·
-          {{ formatDateKey(selected.date) }}</span
-        >
-      </div>
     </div>
 
     <p :id="`${chartId}-readout`" class="sr-only" aria-live="polite">{{ readout }}</p>
@@ -251,7 +284,14 @@ function handleKeydown(event: KeyboardEvent) {
     >
       {{ showTable ? 'Tabelle ausblenden' : 'Als Tabelle anzeigen' }}
     </button>
-    <div v-if="showTable" :id="`${chartId}-table`" class="max-h-64 overflow-y-auto">
+    <div
+      v-if="showTable"
+      :id="`${chartId}-table`"
+      class="max-h-64 overflow-y-auto rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      role="region"
+      tabindex="0"
+      :aria-label="`Fortschrittstabelle ${exerciseName}`"
+    >
       <table class="w-full text-left text-sm">
         <caption class="sr-only">
           {{
@@ -271,7 +311,7 @@ function handleKeydown(event: KeyboardEvent) {
             </th>
           </tr>
         </thead>
-        <tbody class="tabular-nums text-fg">
+        <tbody class="text-fg tabular-nums">
           <tr
             v-for="point in [...points].reverse()"
             :key="point.date"

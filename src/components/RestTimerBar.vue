@@ -1,9 +1,18 @@
 <script setup lang="ts">
+import { focusById } from '@/composables/focus'
+import { useTransientMessage } from '@/composables/useTransientMessage'
 import { useRestTimerStore } from '@/stores/restTimerStore'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 const restTimer = useRestTimerStore()
-const announcement = ref('')
+const {
+  message: announcement,
+  show: announce,
+  clear: clearAnnouncement,
+} = useTransientMessage(10_000)
+const bar = ref<HTMLElement | null>(null)
+// Where keyboard focus goes back to when the bar disappears (usually "Satz speichern").
+let returnFocusTo: HTMLElement | null = null
 
 const visible = computed(() => restTimer.running || restTimer.finishedAt !== null)
 
@@ -17,20 +26,49 @@ function spokenDuration(seconds: number) {
   return [minutes ? `${minutes} Min.` : '', rest ? `${rest} Sek.` : ''].filter(Boolean).join(' ')
 }
 
+function focusIsInside() {
+  return Boolean(bar.value?.contains(document.activeElement))
+}
+
 // Announce only the start and the end; role="timer" keeps the countdown itself silent.
 watch(
   () => restTimer.endsAt,
   (endsAt, previous) => {
-    if (endsAt !== null && previous === null) {
-      announcement.value = `Pause läuft: ${spokenDuration(restTimer.remainingSeconds)}.`
+    if (endsAt === null || previous !== null) return
+    if (!focusIsInside() && document.activeElement instanceof HTMLElement) {
+      returnFocusTo = document.activeElement
     }
+    announce(`Pause läuft: ${spokenDuration(restTimer.remainingSeconds)}`)
   },
 )
+
+// These run before the DOM changes, so they can tell whether focus was inside the bar.
 watch(
-  () => restTimer.finishedAt,
-  (finishedAt) => {
-    if (finishedAt !== null) announcement.value = 'Pause vorbei – nächster Satz!'
+  () => restTimer.running,
+  (running, wasRunning) => {
+    if (running || !wasRunning) return
+    const hadFocus = focusIsInside()
+    if (restTimer.finishedAt !== null) {
+      announce('Pause vorbei – nächster Satz!')
+      if (hadFocus) void focusById('rest-timer-close')
+    } else {
+      clearAnnouncement()
+    }
   },
+  { flush: 'pre' },
+)
+
+watch(
+  visible,
+  (isVisible, wasVisible) => {
+    if (isVisible || !wasVisible || !focusIsInside()) return
+    const target = returnFocusTo
+    void nextTick(() => {
+      if (target?.isConnected) target.focus()
+      else void focusById('training-heading', 'new-category')
+    })
+  },
+  { flush: 'pre' },
 )
 
 const buttonClass =
@@ -42,6 +80,7 @@ const buttonClass =
     <p class="sr-only" aria-live="polite">{{ announcement }}</p>
     <section
       v-if="visible"
+      ref="bar"
       class="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_rgb(0_0_0/0.08)]"
       aria-label="Pausentimer"
     >
@@ -83,7 +122,12 @@ const buttonClass =
         </template>
         <template v-else>
           <p class="min-w-0 flex-1 text-lg font-bold text-fg">Pause vorbei – nächster Satz!</p>
-          <button type="button" :class="buttonClass" @click="restTimer.dismissFinished()">
+          <button
+            id="rest-timer-close"
+            type="button"
+            :class="buttonClass"
+            @click="restTimer.dismissFinished()"
+          >
             Schließen
           </button>
         </template>

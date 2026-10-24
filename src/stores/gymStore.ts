@@ -44,6 +44,7 @@ export const LEGACY_BACKUP_KEY = 'gymbuddie:backup:gymData:v1'
 export const RECOVERY_BACKUP_KEY = 'gymbuddie:backup:invalid-data:v2'
 export const PRE_IMPORT_BACKUP_KEY = 'gymbuddie:backup:before-import:v2'
 export const LAST_EXPORT_KEY = 'gymbuddie:meta:last-export'
+export const LAST_IMPORT_KEY = 'gymbuddie:meta:last-import'
 
 const BACKUP_KEY_PREFIX = 'gymbuddie:backup:'
 const MAX_COPIES_PER_BACKUP = 3
@@ -385,6 +386,8 @@ export const useGymStore = defineStore('gym', () => {
   const writeBlock = ref<WriteBlockReason | null>(initial.writeBlock)
   const recoveryCopies = ref<RecoveryCopy[]>([])
   const lastExportAt = ref<string | null>(null)
+  // A successful import means the data on this device matches a backup file.
+  const lastImportAt = ref<string | null>(null)
   const storagePersisted = ref<boolean | null>(null)
   const storage = initial.storage
 
@@ -427,8 +430,10 @@ export const useGymStore = defineStore('gym', () => {
   function refreshLastExport() {
     try {
       lastExportAt.value = storage?.getItem(LAST_EXPORT_KEY) ?? null
+      lastImportAt.value = storage?.getItem(LAST_IMPORT_KEY) ?? null
     } catch {
       lastExportAt.value = null
+      lastImportAt.value = null
     }
   }
 
@@ -885,6 +890,12 @@ export const useGymStore = defineStore('gym', () => {
     persistenceStatus.value = 'saved'
     persistenceError.value = null
     lastSavedAt.value = new Date().toISOString()
+    lastImportAt.value = lastSavedAt.value
+    try {
+      storage.setItem(LAST_IMPORT_KEY, lastSavedAt.value)
+    } catch {
+      // Only feeds the backup reminder.
+    }
     refreshRecoveryCopies()
     void requestPersistentStorage()
     return {
@@ -954,7 +965,9 @@ export const useGymStore = defineStore('gym', () => {
     const handleStorage = (event: StorageEvent) => {
       if (event.storageArea && event.storageArea !== storage) return
       if (event.key === null || event.key.startsWith(BACKUP_KEY_PREFIX)) refreshRecoveryCopies()
-      if (event.key === null || event.key === LAST_EXPORT_KEY) refreshLastExport()
+      if (event.key === null || event.key === LAST_EXPORT_KEY || event.key === LAST_IMPORT_KEY) {
+        refreshLastExport()
+      }
       if (event.key === null || event.key === GYM_STORAGE_KEY) syncFromStorage()
     }
     // Pages restored from the back/forward cache or woken up may have missed storage events.
@@ -980,6 +993,7 @@ export const useGymStore = defineStore('gym', () => {
     writeBlock,
     recoveryCopies,
     lastExportAt,
+    lastImportAt,
     storagePersisted,
     storedSize,
     dataUpdatedAt,

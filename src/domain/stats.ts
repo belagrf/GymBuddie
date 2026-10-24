@@ -5,6 +5,13 @@ export function estimatedOneRepMax(weight: number, reps: number): number {
   return reps === 1 ? weight : weight * (1 + reps / 30)
 }
 
+// Epley estimates are floating-point; equal sets must compare as ties, not as tiny records.
+const EPSILON = 1e-9
+
+function isBetter(candidate: number, best: number) {
+  return candidate > best + EPSILON
+}
+
 /** Rounds an estimated value for display; estimates never deserve more than 0,5 kg precision. */
 export function roundEstimate(value: number): number {
   return Math.round(value * 2) / 2
@@ -54,7 +61,8 @@ export function recordsForNewSet(
   const kinds: RecordKind[] = []
   if (candidate.weight > Math.max(...weighted.map((set) => set.weight))) kinds.push('weight')
   const bestEstimate = Math.max(...weighted.map((set) => estimatedOneRepMax(set.weight, set.reps)))
-  if (estimatedOneRepMax(candidate.weight, candidate.reps) > bestEstimate) kinds.push('estimate')
+  if (isBetter(estimatedOneRepMax(candidate.weight, candidate.reps), bestEstimate))
+    kinds.push('estimate')
   return kinds
 }
 
@@ -80,7 +88,7 @@ export function exerciseRecords(history: WorkoutSession[]): ExerciseRecords {
     }
     if (!records.heaviest || set.weight > records.heaviest.weight) records.heaviest = set
     const estimate = estimatedOneRepMax(set.weight, set.reps)
-    if (!records.bestEstimate || estimate > records.bestEstimate.estimate) {
+    if (!records.bestEstimate || isBetter(estimate, records.bestEstimate.estimate)) {
       records.bestEstimate = { ...set, estimate }
     }
   }
@@ -117,26 +125,33 @@ export interface ProgressSeries {
 }
 
 /**
- * The best set per training day, oldest first: estimated maximum for weighted exercises, or
- * repetitions for exercises that only ever used bodyweight.
+ * The best set per training day, oldest first: the estimated maximum once there are two weighted
+ * training days, otherwise bodyweight repetitions.
  */
 export function progressSeries(history: WorkoutSession[]): ProgressSeries {
-  const weighted = history.some((session) => session.sets.some((set) => set.weight > 0))
-  const points: ProgressPoint[] = []
+  const weighted = bestPerDay(history, 'estimate')
+  // A bodyweight exercise with one weighted day still charts its repetitions.
+  if (weighted.length >= 2) return { metric: 'estimate', points: weighted }
+  const reps = bestPerDay(history, 'reps')
+  return reps.length >= 2 || weighted.length === 0
+    ? { metric: 'reps', points: reps }
+    : { metric: 'estimate', points: weighted }
+}
 
+function bestPerDay(history: WorkoutSession[], metric: ProgressSeries['metric']): ProgressPoint[] {
+  const points: ProgressPoint[] = []
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const session = history[index]
     if (!session) continue
     let best: ProgressPoint | null = null
     for (const set of session.sets) {
-      if (weighted && set.weight === 0) continue
-      const value = weighted ? estimatedOneRepMax(set.weight, set.reps) : set.reps
-      if (!best || value > best.value) {
+      if (metric === 'estimate' ? set.weight === 0 : set.weight !== 0) continue
+      const value = metric === 'estimate' ? estimatedOneRepMax(set.weight, set.reps) : set.reps
+      if (!best || isBetter(value, best.value)) {
         best = { date: session.date, value, weight: set.weight, reps: set.reps }
       }
     }
     if (best) points.push(best)
   }
-
-  return { metric: weighted ? 'estimate' : 'reps', points }
+  return points
 }

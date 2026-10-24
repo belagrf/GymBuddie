@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 
 import { useSettingsStore } from '@/stores/settingsStore'
 
@@ -35,6 +35,8 @@ export const useRestTimerStore = defineStore('restTimer', () => {
   let interval: ReturnType<typeof setInterval> | undefined
   let finishedTimeout: ReturnType<typeof setTimeout> | undefined
   let wakeLock: WakeLockSentinel | null = null
+  let wakeLockPending = false
+  let gestureListener: (() => void) | null = null
   let audio: AudioContext | null = null
 
   const running = computed(() => endsAt.value !== null)
@@ -60,21 +62,53 @@ export const useRestTimerStore = defineStore('restTimer', () => {
   }
 
   async function requestWakeLock() {
-    if (!settingsStore.settings.keepAwake || wakeLock || typeof navigator === 'undefined') return
-    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return
+    if (!settingsStore.settings.keepAwake || wakeLock || wakeLockPending) return
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return
+    if (document.visibilityState !== 'visible') return
+    wakeLockPending = true
     try {
-      wakeLock = await navigator.wakeLock.request('screen')
-      wakeLock.addEventListener('release', () => {
-        wakeLock = null
+      const sentinel = await navigator.wakeLock.request('screen')
+      // The rest may have ended, or keepAwake switched off, while the request was pending.
+      if (endsAt.value === null || !settingsStore.settings.keepAwake) {
+        void sentinel.release().catch(() => undefined)
+        return
+      }
+      wakeLock = sentinel
+      sentinel.addEventListener('release', () => {
+        if (wakeLock === sentinel) wakeLock = null
       })
     } catch {
       // Denied (e.g. battery saver); the timer works without it.
+    } finally {
+      wakeLockPending = false
     }
   }
 
   function releaseWakeLock() {
     void wakeLock?.release().catch(() => undefined)
     wakeLock = null
+  }
+
+  /**
+   * A timer resumed after a reload has no user gesture behind it, so audio and vibration are not
+   * allowed yet. The next tap or key press anywhere unlocks them for the end signal.
+   */
+  function primeOnNextGesture() {
+    if (typeof window === 'undefined') return
+    removeGestureListeners()
+    gestureListener = () => {
+      removeGestureListeners()
+      primeAudio()
+    }
+    window.addEventListener('pointerdown', gestureListener, { once: true })
+    window.addEventListener('keydown', gestureListener, { once: true })
+  }
+
+  function removeGestureListeners() {
+    if (!gestureListener) return
+    window.removeEventListener('pointerdown', gestureListener)
+    window.removeEventListener('keydown', gestureListener)
+    gestureListener = null
   }
 
   /** Creates or wakes the audio context while we are inside the user's tap. */
@@ -93,7 +127,8 @@ export const useRestTimerStore = defineStore('restTimer', () => {
   }
 
   function signalEnd() {
-    if (!settingsStore.settings.restAlert) return
+    // Only the visible tab signals, so several open tabs do not all beep.
+    if (!settingsStore.settings.restAlert || document.visibilityState !== 'visible') return
     try {
       navigator.vibrate?.([200, 100, 200])
     } catch {
@@ -142,6 +177,7 @@ export const useRestTimerStore = defineStore('restTimer', () => {
     stopTicking()
     persist()
     releaseWakeLock()
+    removeGestureListeners()
     signalEnd()
     finishedAt.value = Date.now()
     if (finishedTimeout !== undefined) clearTimeout(finishedTimeout)
@@ -175,23 +211,29 @@ export const useRestTimerStore = defineStore('restTimer', () => {
     tick()
   }
 
-  function stop() {
+  function stop({ silentlyFromOtherTab = false } = {}) {
     endsAt.value = null
     totalMs.value = 0
     finishedAt.value = null
     stopTicking()
-    persist()
+    if (!silentlyFromOtherTab) persist()
     releaseWakeLock()
+    removeGestureListeners()
   }
 
-  function dismissFinished() {
+  function adopt(savedEnd: number, savedTotal: number) {
+    endsAt.value = savedEnd
+    totalMs.value = savedTotal
     finishedAt.value = null
+    startTicking()
+    void requestWakeLock()
+    primeOnNextGesture()
   }
 
-  // Resume a timer that was running before a reload; one that ended meanwhile is dropped.
-  try {
-    const saved: unknown = JSON.parse(storage()?.getItem(REST_TIMER_KEY) ?? 'null')
-    if (typeof saved === 'object' && saved !== null) {
+  function readSaved(raw: string | null): { endsAt: number; totalMs: number } | null {
+    try {
+      const saved: unknown = JSON.parse(raw ?? 'null')
+      if (typeof saved !== 'object' || saved === null) return null
       const { endsAt: savedEnd, totalMs: savedTotal } = saved as Record<string, unknown>
       if (
         typeof savedEnd === 'number' &&
@@ -199,16 +241,37 @@ export const useRestTimerStore = defineStore('restTimer', () => {
         savedEnd > Date.now() &&
         savedEnd - Date.now() <= MAX_SECONDS * 1000
       ) {
-        endsAt.value = savedEnd
-        totalMs.value = savedTotal
-        startTicking()
-      } else {
-        storage()?.removeItem(REST_TIMER_KEY)
+        return { endsAt: savedEnd, totalMs: savedTotal }
       }
+    } catch {
+      // Unreadable: treated as no timer.
     }
-  } catch {
-    // Ignore an unreadable saved timer.
+    return null
   }
+
+  function dismissFinished() {
+    finishedAt.value = null
+  }
+
+  // Resume a timer that was running before a reload; one that ended meanwhile is dropped.
+  const resumed = readSaved(storage()?.getItem(REST_TIMER_KEY) ?? null)
+  if (resumed) adopt(resumed.endsAt, resumed.totalMs)
+  else {
+    try {
+      storage()?.removeItem(REST_TIMER_KEY)
+    } catch {
+      // Nothing to clean up.
+    }
+  }
+
+  // Switching "Bildschirm anlassen" off mid-rest releases the lock right away, and vice versa.
+  watch(
+    () => settingsStore.settings.keepAwake,
+    (keepAwake) => {
+      if (!keepAwake) releaseWakeLock()
+      else if (endsAt.value !== null) void requestWakeLock()
+    },
+  )
 
   if (typeof document !== 'undefined') {
     const handleVisibility = () => {
@@ -217,9 +280,19 @@ export const useRestTimerStore = defineStore('restTimer', () => {
       // The browser releases wake locks when the page is hidden; take it again.
       if (endsAt.value !== null) void requestWakeLock()
     }
+    // Keep tabs in step: a rest started or stopped in another tab applies here too.
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== REST_TIMER_KEY && event.key !== null) return
+      const saved = readSaved(event.key === null ? null : event.newValue)
+      if (saved) adopt(saved.endsAt, saved.totalMs)
+      else if (endsAt.value !== null) stop({ silentlyFromOtherTab: true })
+    }
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('storage', handleStorage)
     onScopeDispose(() => {
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('storage', handleStorage)
+      removeGestureListeners()
       stopTicking()
       if (finishedTimeout !== undefined) clearTimeout(finishedTimeout)
       releaseWakeLock()

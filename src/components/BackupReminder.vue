@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { focusById } from '@/composables/focus'
 import { useBackupExport } from '@/composables/useBackupExport'
 import { useTransientMessage } from '@/composables/useTransientMessage'
 import { useGymStore } from '@/stores/gymStore'
@@ -36,11 +37,18 @@ const firstSetTime = computed(() => {
 })
 
 const lastExportTime = computed(() => parseTime(gymStore.lastExportAt))
+// Data restored from a backup is as safe as a fresh export, until it changes.
+const baselineTime = computed(() => {
+  const times = [lastExportTime.value, parseTime(gymStore.lastImportAt)].filter(
+    (time): time is number => time !== null,
+  )
+  return times.length > 0 ? Math.max(...times) : null
+})
 
 const daysSinceBackup = computed(() => {
   // Referencing today makes the reminder re-check after midnight.
   void props.today
-  const since = lastExportTime.value ?? firstSetTime.value
+  const since = baselineTime.value ?? firstSetTime.value
   return since === null ? 0 : Math.floor((Date.now() - since) / DAY_MS)
 })
 
@@ -48,11 +56,7 @@ const visible = computed(() => {
   if (firstSetTime.value === null) return false
   const dataUpdated = parseTime(gymStore.dataUpdatedAt)
   // Nothing new since the last backup: no reason to nag.
-  if (
-    lastExportTime.value !== null &&
-    dataUpdated !== null &&
-    dataUpdated <= lastExportTime.value
-  ) {
+  if (baselineTime.value !== null && dataUpdated !== null && dataUpdated <= baselineTime.value) {
     return false
   }
   if (daysSinceBackup.value < REMINDER_DAYS) return false
@@ -60,20 +64,29 @@ const visible = computed(() => {
   return snoozedUntil === null || Date.now() >= snoozedUntil
 })
 
+// The reminder disappears under the focused button; continue with the next section.
+function moveFocusOn() {
+  void focusById('new-category-heading', 'new-category')
+}
+
 async function backUpNow() {
   if (canShareFiles) {
     const outcome = await shareBackup()
-    if (outcome === 'shared') showStatus('Backup gesichert.')
+    if (outcome === 'shared') {
+      showStatus('Backup gesichert.')
+      moveFocusOn()
+    }
     if (outcome !== 'failed') return
   }
-  showStatus(
-    downloadBackup() ? 'Backup heruntergeladen.' : 'Das Backup konnte nicht erstellt werden.',
-  )
+  const downloaded = downloadBackup()
+  showStatus(downloaded ? 'Backup heruntergeladen.' : 'Das Backup konnte nicht erstellt werden.')
+  if (downloaded) moveFocusOn()
 }
 
 function later() {
   uiStore.snoozeReminder(new Date(Date.now() + SNOOZE_DAYS * DAY_MS))
   showStatus(`Erinnerung in ${SNOOZE_DAYS} Tagen.`)
+  moveFocusOn()
 }
 </script>
 
@@ -86,9 +99,11 @@ function later() {
     >
       <h2 id="backup-reminder-heading" class="font-semibold">
         {{
-          lastExportTime === null
+          baselineTime === null
             ? 'Du hast noch kein Backup erstellt.'
-            : `Dein letztes Backup ist ${daysSinceBackup} Tage alt.`
+            : lastExportTime === baselineTime
+              ? `Dein letztes Backup ist ${daysSinceBackup} Tage alt.`
+              : `Seit dem letzten Import sind ${daysSinceBackup} Tage vergangen.`
         }}
       </h2>
       <p class="mt-1 text-fg-muted">

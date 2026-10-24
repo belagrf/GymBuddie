@@ -55,6 +55,14 @@ describe('training statistics', () => {
     expect(recordsForNewSet(history, { weight: 50, reps: 5 })).toEqual([])
   })
 
+  it('treats an equal estimate and float-noise ties as no record', () => {
+    // 60 × 8 is the best estimate in the history: equal is not better.
+    expect(recordsForNewSet(history, { weight: 60, reps: 8 })).toEqual([])
+    const tie: WorkoutSession[] = [{ date: '2026-07-01', sets: [{ id: 'x', weight: 70, reps: 3 }] }]
+    // 70 × 3 and 70,000000001 × 3 must compare as equal estimates, not as a record.
+    expect(recordsForNewSet(tie, { weight: 70, reps: 3 })).toEqual([])
+  })
+
   it('compares bodyweight sets by repetitions only', () => {
     const bodyweight: WorkoutSession[] = [
       { date: '2026-07-10', sets: [{ id: 'p1', weight: 0, reps: 10 }] },
@@ -102,6 +110,30 @@ describe('training statistics', () => {
       ['2026-07-08', 62.5, 5],
       ['2026-07-12', 60, 8],
     ])
+  })
+
+  it('keeps charting repetitions when a bodyweight exercise gets one weighted day', () => {
+    const series = progressSeries([
+      { date: '2026-07-12', sets: [{ id: 'w', weight: 10, reps: 5 }] },
+      { date: '2026-07-10', sets: [{ id: 'b2', weight: 0, reps: 12 }] },
+      { date: '2026-07-08', sets: [{ id: 'b1', weight: 0, reps: 10 }] },
+    ])
+    expect(series.metric).toBe('reps')
+    expect(series.points.map((point) => point.reps)).toEqual([10, 12])
+  })
+
+  it('does not mark tied bodyweight sets as records', () => {
+    expect(
+      earnedRecordIds([
+        {
+          date: '2026-07-01',
+          sets: [
+            { id: 'p2', weight: 0, reps: 10 },
+            { id: 'p1', weight: 0, reps: 10 },
+          ],
+        },
+      ]).size,
+    ).toBe(0)
   })
 
   it('tracks repetitions for exercises without any weight', () => {

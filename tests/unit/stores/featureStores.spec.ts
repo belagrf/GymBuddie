@@ -71,6 +71,23 @@ describe('UI state store', () => {
     expect(reloaded.exerciseOpenChoice('rows')).toBeUndefined()
   })
 
+  it('saves a collapsed category on its own', () => {
+    useUiStore().toggleCategory('push')
+    setActivePinia(createPinia())
+    expect(useUiStore().isCategoryCollapsed('push')).toBe(true)
+  })
+
+  it('follows changes made in another tab', () => {
+    const store = useUiStore()
+    localStorage.setItem(
+      UI_STATE_KEY,
+      JSON.stringify({ collapsedCategories: ['pull'], exerciseOpen: { rows: true } }),
+    )
+    window.dispatchEvent(new window.StorageEvent('storage', { key: UI_STATE_KEY }))
+    expect(store.isCategoryCollapsed('pull')).toBe(true)
+    expect(store.exerciseOpenChoice('rows')).toBe(true)
+  })
+
   it('prunes entries of deleted categories and exercises', () => {
     const store = useUiStore()
     store.toggleCategory('gone')
@@ -167,6 +184,112 @@ describe('rest timer store', () => {
     timer.start(20)
     await vi.advanceTimersByTimeAsync(0)
     expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('beeps three times at the end and lets go of the wake lock', async () => {
+    vi.useFakeTimers()
+    const oscillators: unknown[] = []
+    const node = () => ({
+      connect: () => node(),
+      gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+      frequency: { value: 0 },
+      start: vi.fn(),
+      stop: vi.fn(),
+    })
+    class FakeAudioContext {
+      currentTime = 0
+      destination = {}
+      resume = vi.fn().mockResolvedValue(undefined)
+      close = vi.fn().mockResolvedValue(undefined)
+      createOscillator() {
+        const oscillator = node()
+        oscillators.push(oscillator)
+        return oscillator
+      }
+      createGain() {
+        return node()
+      }
+    }
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    const release = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      wakeLock: { request: vi.fn().mockResolvedValue({ release, addEventListener: vi.fn() }) },
+    })
+    const timer = useRestTimerStore()
+
+    timer.start(10)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(oscillators).toHaveLength(3)
+    expect(release).toHaveBeenCalled()
+  })
+
+  it('takes the wake lock again after the page was hidden, and drops it when switched off', async () => {
+    vi.useFakeTimers()
+    const listeners: (() => void)[] = []
+    const release = vi.fn().mockResolvedValue(undefined)
+    const request = vi.fn().mockImplementation(async () => ({
+      release,
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+    }))
+    vi.stubGlobal('navigator', { ...navigator, wakeLock: { request } })
+    const timer = useRestTimerStore()
+
+    timer.start(60)
+    await vi.advanceTimersByTimeAsync(0)
+    // The browser releases the lock when the page is hidden …
+    listeners.forEach((listener) => listener())
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(request).toHaveBeenCalledTimes(2)
+
+    useSettingsStore().update({ keepAwake: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(release).toHaveBeenCalled()
+  })
+
+  it('resumes with the wake lock and unlocks sound on the next tap', async () => {
+    vi.useFakeTimers()
+    const request = vi.fn().mockResolvedValue({
+      release: vi.fn().mockResolvedValue(undefined),
+      addEventListener: vi.fn(),
+    })
+    const resume = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        resume = resume
+        close = vi.fn().mockResolvedValue(undefined)
+      },
+    )
+    vi.stubGlobal('navigator', { ...navigator, wakeLock: { request } })
+    localStorage.setItem(
+      REST_TIMER_KEY,
+      JSON.stringify({ endsAt: Date.now() + 60_000, totalMs: 90_000 }),
+    )
+
+    useRestTimerStore()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(request).toHaveBeenCalledWith('screen')
+    expect(resume).not.toHaveBeenCalled()
+    window.dispatchEvent(new Event('pointerdown'))
+    expect(resume).toHaveBeenCalled()
+  })
+
+  it('stops quietly when another tab stops the rest', () => {
+    vi.useFakeTimers()
+    const vibrate = vi.fn()
+    vi.stubGlobal('navigator', { ...navigator, vibrate })
+    const timer = useRestTimerStore()
+    timer.start(60)
+
+    localStorage.removeItem(REST_TIMER_KEY)
+    window.dispatchEvent(
+      new window.StorageEvent('storage', { key: REST_TIMER_KEY, newValue: null }),
+    )
+    expect(timer.running).toBe(false)
+    expect(timer.finishedAt).toBeNull()
+    expect(vibrate).not.toHaveBeenCalled()
   })
 
   it('resumes a running timer after a reload', () => {

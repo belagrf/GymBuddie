@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
+import { onScopeDispose, reactive } from 'vue'
 
 export const UI_STATE_KEY = 'gymbuddie:ui:v1'
 
@@ -52,6 +52,22 @@ export const useUiStore = defineStore('ui', () => {
   // A null-prototype map, so exercise IDs can never collide with Object.prototype members.
   const state = reactive<UiState>(readState())
   state.exerciseOpen = Object.assign(Object.create(null), state.exerciseOpen)
+
+  function reload() {
+    const fresh = readState()
+    state.collapsedCategories = fresh.collapsedCategories
+    state.exerciseOpen = Object.assign(Object.create(null), fresh.exerciseOpen)
+    state.reminderSnoozedUntil = fresh.reminderSnoozedUntil
+  }
+
+  // Another tab changed the view state: adopt it, so a stale tab never writes old state back.
+  if (typeof window !== 'undefined') {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === UI_STATE_KEY || event.key === null) reload()
+    }
+    window.addEventListener('storage', handleStorage)
+    onScopeDispose(() => window.removeEventListener('storage', handleStorage))
+  }
 
   function save() {
     try {
