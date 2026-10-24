@@ -9,6 +9,9 @@ const router = createRouter({
       name: 'home',
       component: HomeView,
     },
+    // index.html, stale bookmarks, and offline navigations served by the service worker's
+    // app-shell fallback would otherwise render an empty page.
+    { path: '/:pathMatch(.*)*', redirect: { name: 'home' } },
   ],
 })
 

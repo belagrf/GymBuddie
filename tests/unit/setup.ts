@@ -1,3 +1,6 @@
+import { getActivePinia } from 'pinia'
+import { afterEach } from 'vitest'
+
 const values = new Map<string, string>()
 
 const localStorageMock: Storage = {
@@ -24,4 +27,11 @@ const localStorageMock: Storage = {
 Object.defineProperty(globalThis, 'localStorage', {
   configurable: true,
   value: localStorageMock,
+})
+
+// Dispose every store after each test so their window listeners do not leak into later tests.
+afterEach(() => {
+  const pinia = getActivePinia() as unknown as
+    { _s: Map<string, { $dispose: () => void }> } | undefined
+  pinia?._s.forEach((store) => store.$dispose())
 })

@@ -1,49 +1,59 @@
 <script setup lang="ts">
 import DataManagement from '@/components/DataManagement.vue'
 import ExerciseCard from '@/components/ExerciseCard.vue'
+import StorageNotice from '@/components/StorageNotice.vue'
+import { CHEVRON_ICON_PATH, PENCIL_ICON_PATH, TRASH_ICON_PATH } from '@/components/icons'
+import { focusById } from '@/composables/focus'
+import { useToday } from '@/composables/useToday'
 import { useTransientMessage } from '@/composables/useTransientMessage'
-import { MAX_NAME_LENGTH, normalizeVideoUrl, toLocalDateKey, useGymStore } from '@/stores/gymStore'
-import { computed, reactive, ref, watchEffect } from 'vue'
-
-interface ExerciseForm {
-  name: string
-  videoUrl: string
-}
+import { MAX_NAME_LENGTH, normalizeVideoUrl, useGymStore } from '@/stores/gymStore'
+import { computed, reactive, ref } from 'vue'
 
 const gymStore = useGymStore()
+const today = useToday()
+
+const inputClass =
+  'mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-500 bg-white px-3 text-base placeholder:text-gray-500 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200 aria-invalid:border-red-700'
+const secondaryButtonClass =
+  'min-h-11 rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600'
+const headerIconButtonClass =
+  'inline-flex min-h-14 min-w-12 shrink-0 items-center justify-center text-gray-600 transition-colors focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px]'
 
 const newCategoryName = ref('')
 const categoryError = ref('')
 const { message: pageStatus, show: showPageStatus, clear: clearPageStatus } = useTransientMessage()
-const newExerciseForms = reactive<Record<string, ExerciseForm>>({})
-const exerciseErrors = reactive<Record<string, string>>({})
-const openExerciseFormId = ref<string | null>(null)
 const collapsedCategories = ref<string[]>([])
+
+// Only one exercise form is open at a time, so a single draft is enough.
+const exerciseFormCategoryId = ref<string | null>(null)
+const exerciseForm = reactive({ name: '', videoUrl: '' })
+const exerciseFormErrors = reactive({ name: '', videoUrl: '', form: '' })
+
+const renamingCategoryId = ref<string | null>(null)
+const renameName = ref('')
+const renameError = ref('')
+
 const confirmCategoryDeleteId = ref<string | null>(null)
+const categoryDeleteError = ref('')
 
-const totalSetsToday = computed(() => {
-  const today = toLocalDateKey()
-
-  return gymStore.categories.reduce(
+const totalSetsToday = computed(() =>
+  gymStore.categories.reduce(
     (total, category) =>
       total +
       category.exercises.reduce(
         (exerciseTotal, exercise) =>
           exerciseTotal +
-          (exercise.history.find((session) => session.date === today)?.sets.length ?? 0),
+          (exercise.history.find((session) => session.date === today.value)?.sets.length ?? 0),
         0,
       ),
     0,
-  )
-})
+  ),
+)
 
-watchEffect(() => {
-  for (const category of gymStore.categories) {
-    if (!newExerciseForms[category.id]) {
-      newExerciseForms[category.id] = { name: '', videoUrl: '' }
-    }
-  }
-})
+function describedBy(...ids: (string | false)[]) {
+  const value = ids.filter(Boolean).join(' ')
+  return value || undefined
+}
 
 function isCategoryCollapsed(categoryId: string) {
   return collapsedCategories.value.includes(categoryId)
@@ -62,16 +72,14 @@ function handleAddCategory() {
 
   if (!name) {
     categoryError.value = 'Gib einen Namen für die Kategorie ein.'
+    void focusById('new-category')
     return
   }
 
-  if (name.length > MAX_NAME_LENGTH) {
-    categoryError.value = `Der Name darf höchstens ${MAX_NAME_LENGTH} Zeichen lang sein.`
-    return
-  }
-
-  if (!gymStore.addCategory(name)) {
-    categoryError.value = 'Die Kategorie konnte nicht hinzugefügt werden.'
+  const result = gymStore.addCategory(name)
+  if (!result.ok) {
+    categoryError.value = result.error
+    void focusById('new-category')
     return
   }
 
@@ -79,68 +87,117 @@ function handleAddCategory() {
   showPageStatus(`Kategorie „${name}“ hinzugefügt.`)
 }
 
+function startRename(categoryId: string, currentName: string) {
+  confirmCategoryDeleteId.value = null
+  renamingCategoryId.value = categoryId
+  renameName.value = currentName
+  renameError.value = ''
+  void focusById(`rename-category-input-${categoryId}`)
+}
+
+function closeRename(categoryId: string) {
+  renamingCategoryId.value = null
+  void focusById(`rename-category-btn-${categoryId}`)
+}
+
+function handleRename(categoryId: string) {
+  renameError.value = ''
+  if (!renameName.value.trim()) {
+    renameError.value = 'Gib einen Namen für die Kategorie ein.'
+    void focusById(`rename-category-input-${categoryId}`)
+    return
+  }
+
+  const result = gymStore.renameCategory(categoryId, renameName.value)
+  if (!result.ok) {
+    renameError.value = result.error
+    return
+  }
+
+  showPageStatus(`Kategorie in „${renameName.value.trim()}“ umbenannt.`)
+  closeRename(categoryId)
+}
+
+function toggleCategoryDelete(categoryId: string) {
+  renamingCategoryId.value = null
+  categoryDeleteError.value = ''
+  confirmCategoryDeleteId.value = confirmCategoryDeleteId.value === categoryId ? null : categoryId
+  if (confirmCategoryDeleteId.value) void focusById(`delete-category-cancel-${categoryId}`)
+}
+
+function cancelCategoryDelete(categoryId: string) {
+  confirmCategoryDeleteId.value = null
+  void focusById(`delete-category-btn-${categoryId}`)
+}
+
 function handleDeleteCategory(categoryId: string, categoryName: string) {
   clearPageStatus()
+  const index = gymStore.categories.findIndex((category) => category.id === categoryId)
 
-  if (gymStore.deleteCategory(categoryId)) {
-    confirmCategoryDeleteId.value = null
-    showPageStatus(`Kategorie „${categoryName}“ gelöscht.`)
+  const result = gymStore.deleteCategory(categoryId)
+  if (!result.ok) {
+    categoryDeleteError.value = result.error
+    return
   }
+
+  confirmCategoryDeleteId.value = null
+  showPageStatus(`Kategorie „${categoryName}“ gelöscht.`)
+  const next = gymStore.categories[index] ?? gymStore.categories[index - 1]
+  void focusById(next ? `category-toggle-${next.id}` : 'new-category')
 }
 
 function openExerciseForm(categoryId: string) {
-  openExerciseFormId.value = categoryId
-  exerciseErrors[categoryId] = ''
+  exerciseFormCategoryId.value = categoryId
+  exerciseForm.name = ''
+  exerciseForm.videoUrl = ''
+  Object.assign(exerciseFormErrors, { name: '', videoUrl: '', form: '' })
+  void focusById(`new-exercise-name-${categoryId}`)
 }
 
 function closeExerciseForm(categoryId: string) {
-  openExerciseFormId.value = null
-  exerciseErrors[categoryId] = ''
+  exerciseFormCategoryId.value = null
+  void focusById(`add-exercise-btn-${categoryId}`)
 }
 
-function handleExerciseDeleted(exerciseName: string) {
+function handleExerciseDeleted(categoryId: string, exerciseName: string) {
   showPageStatus(`Übung „${exerciseName}“ gelöscht.`)
+  void focusById(`add-exercise-btn-${categoryId}`)
 }
 
 function handleAddExercise(categoryId: string) {
-  const form = newExerciseForms[categoryId]
-  exerciseErrors[categoryId] = ''
   clearPageStatus()
+  exerciseFormErrors.form = ''
 
-  if (!form) return
+  const name = exerciseForm.name.trim()
+  exerciseFormErrors.name = name ? '' : 'Gib einen Namen für die Übung ein.'
+  exerciseFormErrors.videoUrl =
+    normalizeVideoUrl(exerciseForm.videoUrl) === null
+      ? 'Der Link muss eine gültige Webadresse sein, z. B. youtube.com/watch?v=…'
+      : ''
 
-  const name = form.name.trim()
-  if (!name) {
-    exerciseErrors[categoryId] = 'Gib einen Namen für die Übung ein.'
+  if (exerciseFormErrors.name || exerciseFormErrors.videoUrl) {
+    void focusById(
+      exerciseFormErrors.name
+        ? `new-exercise-name-${categoryId}`
+        : `new-exercise-url-${categoryId}`,
+    )
     return
   }
 
-  if (name.length > MAX_NAME_LENGTH) {
-    exerciseErrors[categoryId] = `Der Name darf höchstens ${MAX_NAME_LENGTH} Zeichen lang sein.`
+  const result = gymStore.addExercise(categoryId, name, exerciseForm.videoUrl)
+  if (!result.ok) {
+    exerciseFormErrors.form = result.error
     return
   }
 
-  const videoUrl = normalizeVideoUrl(form.videoUrl)
-  if (videoUrl === null) {
-    exerciseErrors[categoryId] = 'Der Link muss eine gültige HTTP- oder HTTPS-Adresse sein.'
-    return
-  }
-
-  if (!gymStore.addExercise(categoryId, name, videoUrl || undefined)) {
-    exerciseErrors[categoryId] = 'Die Übung konnte nicht hinzugefügt werden.'
-    return
-  }
-
-  form.name = ''
-  form.videoUrl = ''
-  openExerciseFormId.value = null
   showPageStatus(`Übung „${name}“ hinzugefügt.`)
+  closeExerciseForm(categoryId)
 }
 </script>
 
 <template>
   <main class="min-h-screen bg-gray-50 font-sans text-gray-900">
-    <div class="mx-auto w-full max-w-4xl px-3 py-5 sm:px-6 sm:py-7">
+    <div class="mx-auto w-full max-w-4xl px-3 pt-5 pb-32 sm:px-6 sm:pt-7">
       <header class="mb-7">
         <h1 class="break-words text-4xl font-bold tracking-tight text-gray-950">GymBuddie</h1>
         <p v-if="totalSetsToday > 0" class="mt-1 text-gray-700">
@@ -150,6 +207,8 @@ function handleAddExercise(categoryId: string) {
         </p>
         <p v-else class="mt-1 text-gray-700">Zeit, ins Training zu starten!</p>
       </header>
+
+      <StorageNotice />
 
       <section aria-labelledby="new-category-heading" class="mb-8">
         <h2 id="new-category-heading" class="mb-2 text-lg font-bold text-gray-900">
@@ -163,9 +222,10 @@ function handleAddExercise(categoryId: string) {
               v-model="newCategoryName"
               type="text"
               autocomplete="off"
+              required
               :maxlength="MAX_NAME_LENGTH"
               placeholder="z. B. Push oder Pull"
-              class="min-h-11 w-full min-w-0 rounded-xl border border-gray-300 px-3 text-base transition-shadow focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              class="min-h-11 w-full min-w-0 rounded-xl border border-gray-500 bg-white px-3 text-base transition-shadow placeholder:text-gray-500 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200 aria-invalid:border-red-700"
               :aria-invalid="Boolean(categoryError)"
               :aria-describedby="categoryError ? 'category-error' : undefined"
             />
@@ -198,23 +258,25 @@ function handleAddExercise(categoryId: string) {
         >
           <p class="font-semibold text-gray-900">Noch keine Trainingskategorien</p>
           <p class="mt-1">Füge oben deine erste Kategorie hinzu, um loszulegen.</p>
+          <p class="mt-1">Oder importiere unten unter „Daten sichern“ ein vorhandenes Backup.</p>
         </div>
 
         <div v-else class="space-y-4">
           <section
             v-for="category in gymStore.categories"
             :key="category.id"
-            class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm"
+            class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
             :aria-labelledby="`category-${category.id}`"
           >
-            <div class="flex min-w-0 items-stretch border-b border-transparent">
+            <div class="flex min-w-0 items-stretch">
               <h3
                 :id="`category-${category.id}`"
                 class="flex min-w-0 flex-1 text-xl font-bold text-gray-900"
               >
                 <button
+                  :id="`category-toggle-${category.id}`"
                   type="button"
-                  class="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 px-4 text-left transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600"
+                  class="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 pl-4 pr-2 text-left transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600"
                   :aria-expanded="!isCategoryCollapsed(category.id)"
                   :aria-controls="`category-content-${category.id}`"
                   @click="toggleCategory(category.id)"
@@ -232,20 +294,25 @@ function handleAddExercise(categoryId: string) {
                       stroke-linecap="round"
                       stroke-linejoin="round"
                       stroke-width="2"
-                      d="m19 9-7 7-7-7"
+                      :d="CHEVRON_ICON_PATH"
                     />
                   </svg>
                 </button>
               </h3>
               <button
+                :id="`rename-category-btn-${category.id}`"
                 type="button"
-                class="inline-flex min-h-14 min-w-14 shrink-0 items-center justify-center text-gray-500 transition-colors hover:bg-red-50 hover:text-red-700 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-red-600"
-                :aria-label="`Kategorie ${category.name} löschen`"
-                :aria-expanded="confirmCategoryDeleteId === category.id"
-                :aria-controls="`delete-category-${category.id}`"
+                :class="[
+                  headerIconButtonClass,
+                  'hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-blue-600',
+                ]"
+                :aria-label="`Kategorie ${category.name} umbenennen`"
+                :aria-expanded="renamingCategoryId === category.id"
+                :aria-controls="`rename-category-${category.id}`"
                 @click="
-                  confirmCategoryDeleteId =
-                    confirmCategoryDeleteId === category.id ? null : category.id
+                  renamingCategoryId === category.id
+                    ? closeRename(category.id)
+                    : startRename(category.id, category.name)
                 "
               >
                 <svg
@@ -259,11 +326,87 @@ function handleAddExercise(categoryId: string) {
                     stroke-linecap="round"
                     stroke-linejoin="round"
                     stroke-width="2"
-                    d="M6 18 18 6M6 6l12 12"
+                    :d="PENCIL_ICON_PATH"
+                  />
+                </svg>
+              </button>
+              <button
+                :id="`delete-category-btn-${category.id}`"
+                type="button"
+                :class="[
+                  headerIconButtonClass,
+                  'hover:bg-red-50 hover:text-red-700 focus-visible:outline-red-600',
+                ]"
+                :aria-label="`Kategorie ${category.name} löschen`"
+                :aria-expanded="confirmCategoryDeleteId === category.id"
+                :aria-controls="`delete-category-${category.id}`"
+                @click="toggleCategoryDelete(category.id)"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    :d="TRASH_ICON_PATH"
                   />
                 </svg>
               </button>
             </div>
+
+            <form
+              v-if="renamingCategoryId === category.id"
+              :id="`rename-category-${category.id}`"
+              class="border-t border-blue-100 bg-blue-50 p-4"
+              novalidate
+              @submit.prevent="handleRename(category.id)"
+              @keydown.esc="closeRename(category.id)"
+            >
+              <label class="block text-sm font-medium text-gray-700">
+                Neuer Name der Kategorie
+                <input
+                  :id="`rename-category-input-${category.id}`"
+                  v-model="renameName"
+                  type="text"
+                  autocomplete="off"
+                  required
+                  :maxlength="MAX_NAME_LENGTH"
+                  :class="inputClass"
+                  :aria-invalid="Boolean(renameError)"
+                  :aria-describedby="
+                    describedBy(Boolean(renameError) && `rename-category-error-${category.id}`)
+                  "
+                />
+              </label>
+              <p
+                v-if="renameError"
+                :id="`rename-category-error-${category.id}`"
+                class="mt-2 text-sm text-red-700"
+                role="alert"
+              >
+                {{ renameError }}
+              </p>
+              <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
+                <button
+                  type="submit"
+                  class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                >
+                  Namen speichern
+                </button>
+                <button
+                  type="button"
+                  :class="[secondaryButtonClass, 'flex-1']"
+                  @click="closeRename(category.id)"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </form>
 
             <div
               v-if="confirmCategoryDeleteId === category.id"
@@ -272,7 +415,14 @@ function handleAddExercise(categoryId: string) {
               role="group"
               :aria-label="`Löschen der Kategorie ${category.name} bestätigen`"
             >
-              <p>Kategorie, Übungen und gesamte Historie wirklich löschen?</p>
+              <p>
+                Kategorie „{{ category.name }}“ mit {{ category.exercises.length }}
+                {{ category.exercises.length === 1 ? 'Übung' : 'Übungen' }} und der gesamten
+                Historie wirklich löschen?
+              </p>
+              <p v-if="categoryDeleteError" class="mt-2 text-red-800" role="alert">
+                {{ categoryDeleteError }}
+              </p>
               <div class="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -282,9 +432,10 @@ function handleAddExercise(categoryId: string) {
                   Endgültig löschen
                 </button>
                 <button
+                  :id="`delete-category-cancel-${category.id}`"
                   type="button"
-                  class="min-h-11 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-                  @click="confirmCategoryDeleteId = null"
+                  :class="secondaryButtonClass"
+                  @click="cancelCategoryDelete(category.id)"
                 >
                   Abbrechen
                 </button>
@@ -298,7 +449,7 @@ function handleAddExercise(categoryId: string) {
                 class="px-4 pb-4"
               >
                 <p
-                  v-if="category.exercises.length === 0 && openExerciseFormId !== category.id"
+                  v-if="category.exercises.length === 0 && exerciseFormCategoryId !== category.id"
                   class="border-t border-gray-100 py-5 text-sm text-gray-600"
                 >
                   In dieser Kategorie gibt es noch keine Übungen.
@@ -310,13 +461,14 @@ function handleAddExercise(categoryId: string) {
                     :key="exercise.id"
                     :category-id="category.id"
                     :exercise="exercise"
-                    @deleted="handleExerciseDeleted"
+                    @deleted="(name) => handleExerciseDeleted(category.id, name)"
                   />
                 </div>
 
                 <div class="mt-3 border-t border-gray-100 pt-3">
                   <button
-                    v-if="openExerciseFormId !== category.id"
+                    v-if="exerciseFormCategoryId !== category.id"
+                    :id="`add-exercise-btn-${category.id}`"
                     type="button"
                     class="min-h-11 w-full rounded-lg px-3 text-left font-semibold text-blue-700 transition-colors hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
                     @click="openExerciseForm(category.id)"
@@ -329,45 +481,76 @@ function handleAddExercise(categoryId: string) {
                     class="rounded-lg bg-blue-50 p-3"
                     novalidate
                     @submit.prevent="handleAddExercise(category.id)"
+                    @keydown.esc="closeExerciseForm(category.id)"
                   >
                     <fieldset>
-                      <legend class="font-semibold text-gray-900">Neue Übung</legend>
+                      <legend class="font-semibold text-gray-900">
+                        Neue Übung in {{ category.name }}
+                      </legend>
                       <div class="mt-2 space-y-3">
                         <label class="block text-sm font-medium text-gray-700">
                           Name der Übung
                           <input
-                            v-model="newExerciseForms[category.id].name"
+                            :id="`new-exercise-name-${category.id}`"
+                            v-model="exerciseForm.name"
                             type="text"
-                            autofocus
                             autocomplete="off"
+                            required
                             :maxlength="MAX_NAME_LENGTH"
-                            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 bg-white px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                            :aria-invalid="Boolean(exerciseErrors[category.id])"
+                            :class="inputClass"
+                            :aria-invalid="Boolean(exerciseFormErrors.name)"
+                            :aria-describedby="
+                              describedBy(
+                                Boolean(exerciseFormErrors.name) &&
+                                  `new-exercise-name-error-${category.id}`,
+                              )
+                            "
                           />
                         </label>
+                        <p
+                          v-if="exerciseFormErrors.name"
+                          :id="`new-exercise-name-error-${category.id}`"
+                          class="text-sm text-red-700"
+                        >
+                          {{ exerciseFormErrors.name }}
+                        </p>
                         <label class="block text-sm font-medium text-gray-700">
                           Anleitung als Link
-                          <span class="font-normal text-gray-500">(optional)</span>
+                          <span class="font-normal text-gray-600">(optional)</span>
                           <input
-                            v-model="newExerciseForms[category.id].videoUrl"
+                            :id="`new-exercise-url-${category.id}`"
+                            v-model="exerciseForm.videoUrl"
                             type="url"
                             inputmode="url"
-                            autocomplete="url"
+                            autocomplete="off"
                             maxlength="2048"
                             placeholder="https://…"
-                            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 bg-white px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                            :aria-invalid="Boolean(exerciseErrors[category.id])"
+                            :class="inputClass"
+                            :aria-invalid="Boolean(exerciseFormErrors.videoUrl)"
+                            :aria-describedby="
+                              describedBy(
+                                Boolean(exerciseFormErrors.videoUrl) &&
+                                  `new-exercise-url-error-${category.id}`,
+                              )
+                            "
                           />
                         </label>
+                        <p
+                          v-if="exerciseFormErrors.videoUrl"
+                          :id="`new-exercise-url-error-${category.id}`"
+                          class="text-sm text-red-700"
+                        >
+                          {{ exerciseFormErrors.videoUrl }}
+                        </p>
                       </div>
                     </fieldset>
 
                     <p
-                      v-if="exerciseErrors[category.id]"
+                      v-if="exerciseFormErrors.form"
                       class="mt-2 text-sm text-red-700"
                       role="alert"
                     >
-                      {{ exerciseErrors[category.id] }}
+                      {{ exerciseFormErrors.form }}
                     </p>
 
                     <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
@@ -379,7 +562,7 @@ function handleAddExercise(categoryId: string) {
                       </button>
                       <button
                         type="button"
-                        class="min-h-11 flex-1 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                        :class="[secondaryButtonClass, 'flex-1']"
                         @click="closeExerciseForm(category.id)"
                       >
                         Abbrechen

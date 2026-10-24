@@ -1,8 +1,23 @@
 <script setup lang="ts">
+import { CHEVRON_ICON_PATH, PENCIL_ICON_PATH, TRASH_ICON_PATH } from '@/components/icons'
+import { focusById } from '@/composables/focus'
 import { useTransientMessage } from '@/composables/useTransientMessage'
-import type { Exercise, SetEntry } from '@/stores/gymStore'
-import { isValidSetValues, MAX_REPS, MAX_WEIGHT_KG, useGymStore } from '@/stores/gymStore'
+import { formatDateKey, formatWeight, formatWeightInput } from '@/domain/format'
+import { parseRepsInput, parseWeightInput } from '@/domain/setInput'
+import type { Exercise, SetEntry, WorkoutSession } from '@/stores/gymStore'
+import {
+  MAX_NAME_LENGTH,
+  MAX_REPS,
+  MAX_WEIGHT_KG,
+  normalizeVideoUrl,
+  useGymStore,
+} from '@/stores/gymStore'
 import { computed, reactive, ref } from 'vue'
+
+const INITIAL_VISIBLE_SESSIONS = 3
+const SESSIONS_PER_PAGE = 10
+// A second tap on "Satz speichern" right after a save is treated as a double tap, not a new set.
+const DOUBLE_SUBMIT_WINDOW_MS = 1_500
 
 const props = defineProps<{
   categoryId: string
@@ -14,18 +29,38 @@ const emit = defineEmits<{
 }>()
 
 const gymStore = useGymStore()
+const { message: setStatus, show: showSetStatus, clear: clearSetStatus } = useTransientMessage()
+
+const weightMessage = `Gib ein Gewicht von 0 bis ${MAX_WEIGHT_KG.toLocaleString('de-DE')} kg ein, z. B. 42,5.`
+const repsMessage = `Gib ganze Wiederholungen von 1 bis ${MAX_REPS.toLocaleString('de-DE')} ein.`
+
+const inputClass =
+  'mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-500 bg-white px-3 text-base placeholder:text-gray-500 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200 aria-invalid:border-red-700'
+const secondaryButtonClass =
+  'min-h-11 rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600'
+const iconButtonClass =
+  'inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-gray-600 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2'
 
 const newSet = reactive({ weight: '', reps: '' })
-const setError = ref('')
-const { message: setStatus, show: showSetStatus, clear: clearSetStatus } = useTransientMessage()
+const newSetErrors = reactive({ weight: '', reps: '', form: '' })
+let lastLoggedAt = 0
+
 const historyExpanded = ref(true)
+const visibleSessionCount = ref(INITIAL_VISIBLE_SESSIONS)
+
+const editingExercise = ref(false)
+const exerciseForm = reactive({ name: '', videoUrl: '' })
+const exerciseFormErrors = reactive({ name: '', videoUrl: '', form: '' })
 const confirmExerciseDelete = ref(false)
-const confirmSetDeleteId = ref<string | null>(null)
+const exerciseDeleteError = ref('')
+
 const editingSetId = ref<string | null>(null)
 const editSet = reactive({ weight: '', reps: '' })
-const editError = ref('')
+const editSetErrors = reactive({ weight: '', reps: '', form: '' })
+const confirmSetDeleteId = ref<string | null>(null)
+const setDeleteError = ref('')
 
-const historyId = computed(() => `history-${props.exercise.id}`)
+const id = computed(() => props.exercise.id)
 const safeVideoUrl = computed(() => {
   if (!props.exercise.videoUrl) return null
 
@@ -41,120 +76,198 @@ const latestSession = computed(() => props.exercise.history[0])
 const totalHistorySets = computed(() =>
   props.exercise.history.reduce((total, session) => total + session.sets.length, 0),
 )
+const visibleSessions = computed(() => props.exercise.history.slice(0, visibleSessionCount.value))
+const hiddenSessionCount = computed(() =>
+  Math.max(0, props.exercise.history.length - visibleSessionCount.value),
+)
 
-function parseWeight(value: string): number | null {
-  const normalized = value.trim().replace(',', '.')
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) return null
-
-  const number = Number(normalized)
-  return isValidSetValues(number, 1) ? number : null
+function setLabel(session: WorkoutSession, index: number) {
+  return `Satz ${session.sets.length - index} vom ${formatDateKey(session.date)}`
 }
 
-function parseReps(value: string): number | null {
-  const normalized = value.trim()
-  if (!/^\d+$/.test(normalized)) return null
+function describedBy(...ids: (string | false)[]) {
+  const value = ids.filter(Boolean).join(' ')
+  return value || undefined
+}
 
-  const number = Number(normalized)
-  return isValidSetValues(0, number) ? number : null
+function handleWeightEnter(event: KeyboardEvent) {
+  if (newSet.reps.trim()) return
+  // "Weiter" on the weight keyboard should move on to the repetitions, not submit.
+  event.preventDefault()
+  void focusById(`reps-${id.value}`)
 }
 
 function handleLogSet() {
-  setError.value = ''
+  if (!newSet.reps.trim() && Date.now() - lastLoggedAt < DOUBLE_SUBMIT_WINDOW_MS) return
+
+  newSetErrors.form = ''
   clearSetStatus()
 
-  const weight = parseWeight(newSet.weight)
-  const reps = parseReps(newSet.reps)
+  const weight = parseWeightInput(newSet.weight)
+  const reps = parseRepsInput(newSet.reps)
+  newSetErrors.weight = weight === null ? weightMessage : ''
+  newSetErrors.reps = reps === null ? repsMessage : ''
 
   if (weight === null || reps === null) {
-    setError.value = `Gib ein Gewicht von 0 bis ${MAX_WEIGHT_KG.toLocaleString('de-DE')} kg und ganze Wiederholungen von 1 bis ${MAX_REPS.toLocaleString('de-DE')} ein.`
+    void focusById(weight === null ? `weight-${id.value}` : `reps-${id.value}`)
     return
   }
 
-  if (!gymStore.logSet(props.exercise.id, { weight, reps })) {
-    setError.value = 'Der Satz konnte nicht gespeichert werden. Versuche es erneut.'
+  const result = gymStore.logSet(props.exercise.id, { weight, reps })
+  if (!result.ok) {
+    newSetErrors.form = `Der Satz wurde nicht gespeichert. ${result.error}`
     return
   }
 
+  lastLoggedAt = Date.now()
   newSet.reps = ''
-  showSetStatus('Satz gespeichert.')
+  historyExpanded.value = true
+  showSetStatus(`Satz gespeichert: ${formatWeight(weight)} kg × ${reps} Wdh.`)
 }
 
-function startEdit(set: SetEntry) {
+function startExerciseEdit() {
+  confirmExerciseDelete.value = false
+  editingExercise.value = true
+  exerciseForm.name = props.exercise.name
+  exerciseForm.videoUrl = props.exercise.videoUrl ?? ''
+  Object.assign(exerciseFormErrors, { name: '', videoUrl: '', form: '' })
+  void focusById(`edit-exercise-name-${id.value}`)
+}
+
+function closeExerciseEdit() {
+  editingExercise.value = false
+  void focusById(`edit-exercise-btn-${id.value}`)
+}
+
+function handleUpdateExercise() {
+  exerciseFormErrors.form = ''
+  exerciseFormErrors.name = exerciseForm.name.trim() ? '' : 'Gib einen Namen für die Übung ein.'
+  exerciseFormErrors.videoUrl =
+    normalizeVideoUrl(exerciseForm.videoUrl) === null
+      ? 'Der Link muss eine gültige Webadresse sein, z. B. youtube.com/watch?v=…'
+      : ''
+  if (exerciseFormErrors.name || exerciseFormErrors.videoUrl) {
+    void focusById(
+      exerciseFormErrors.name ? `edit-exercise-name-${id.value}` : `edit-exercise-url-${id.value}`,
+    )
+    return
+  }
+
+  const result = gymStore.updateExercise(props.exercise.id, {
+    name: exerciseForm.name,
+    videoUrl: exerciseForm.videoUrl,
+  })
+  if (!result.ok) {
+    exerciseFormErrors.form = result.error
+    return
+  }
+
+  showSetStatus('Übung aktualisiert.')
+  closeExerciseEdit()
+}
+
+function toggleExerciseDelete() {
+  editingExercise.value = false
+  exerciseDeleteError.value = ''
+  confirmExerciseDelete.value = !confirmExerciseDelete.value
+  if (confirmExerciseDelete.value) void focusById(`delete-exercise-cancel-${id.value}`)
+}
+
+function cancelExerciseDelete() {
+  confirmExerciseDelete.value = false
+  void focusById(`delete-exercise-btn-${id.value}`)
+}
+
+function handleDeleteExercise() {
+  const name = props.exercise.name
+  const result = gymStore.deleteExercise(props.categoryId, props.exercise.id)
+  if (!result.ok) {
+    exerciseDeleteError.value = result.error
+    return
+  }
+  emit('deleted', name)
+}
+
+function toggleHistory() {
+  historyExpanded.value = !historyExpanded.value
+}
+
+function showMoreSessions() {
+  const firstNewSession = props.exercise.history[visibleSessionCount.value]
+  visibleSessionCount.value += SESSIONS_PER_PAGE
+  if (firstNewSession) void focusById(`session-${id.value}-${firstNewSession.date}`)
+}
+
+function startSetEdit(set: SetEntry) {
   confirmSetDeleteId.value = null
   editingSetId.value = set.id
-  editSet.weight = String(set.weight).replace('.', ',')
+  editSet.weight = formatWeightInput(set.weight)
   editSet.reps = String(set.reps)
-  editError.value = ''
+  Object.assign(editSetErrors, { weight: '', reps: '', form: '' })
   clearSetStatus()
+  void focusById(`set-edit-weight-${set.id}`)
 }
 
-function cancelEdit() {
+function cancelSetEdit(setId: string) {
   editingSetId.value = null
-  editError.value = ''
+  void focusById(`set-edit-btn-${setId}`)
 }
 
 function handleUpdateSet(setId: string) {
-  editError.value = ''
+  editSetErrors.form = ''
 
-  const weight = parseWeight(editSet.weight)
-  const reps = parseReps(editSet.reps)
+  const weight = parseWeightInput(editSet.weight)
+  const reps = parseRepsInput(editSet.reps)
+  editSetErrors.weight = weight === null ? weightMessage : ''
+  editSetErrors.reps = reps === null ? repsMessage : ''
 
   if (weight === null || reps === null) {
-    editError.value = `Gib ein Gewicht von 0 bis ${MAX_WEIGHT_KG.toLocaleString('de-DE')} kg und ganze Wiederholungen von 1 bis ${MAX_REPS.toLocaleString('de-DE')} ein.`
+    void focusById(weight === null ? `set-edit-weight-${setId}` : `set-edit-reps-${setId}`)
     return
   }
 
-  if (!gymStore.updateSet(props.exercise.id, setId, { weight, reps })) {
-    editError.value = 'Der Satz konnte nicht aktualisiert werden. Versuche es erneut.'
+  const result = gymStore.updateSet(props.exercise.id, setId, { weight, reps })
+  if (!result.ok) {
+    editSetErrors.form = `Der Satz wurde nicht aktualisiert. ${result.error}`
     return
   }
 
-  editingSetId.value = null
   showSetStatus('Satz aktualisiert.')
+  cancelSetEdit(setId)
 }
 
 function askToDeleteSet(setId: string) {
   editingSetId.value = null
-  editError.value = ''
+  setDeleteError.value = ''
   confirmSetDeleteId.value = setId
+  void focusById(`set-delete-cancel-${setId}`)
+}
+
+function cancelSetDelete(setId: string) {
+  confirmSetDeleteId.value = null
+  void focusById(`set-delete-btn-${setId}`)
 }
 
 function handleDeleteSet(setId: string) {
-  if (!gymStore.deleteSet(props.exercise.id, setId)) {
-    confirmSetDeleteId.value = null
-    setError.value = 'Der Satz konnte nicht gelöscht werden. Versuche es erneut.'
+  const result = gymStore.deleteSet(props.exercise.id, setId)
+  if (!result.ok) {
+    setDeleteError.value = `Der Satz wurde nicht gelöscht. ${result.error}`
     return
   }
 
   confirmSetDeleteId.value = null
   showSetStatus('Satz gelöscht.')
-}
-
-function handleDeleteExercise() {
-  if (gymStore.deleteExercise(props.categoryId, props.exercise.id)) {
-    emit('deleted', props.exercise.name)
-  }
-}
-
-function formatDate(dateString: string) {
-  const [year, month, day] = dateString.split('-').map(Number)
-  const date = new Date(year, month - 1, day)
-
-  if (Number.isNaN(date.getTime())) return dateString
-
-  return new Intl.DateTimeFormat('de-DE', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(date)
+  void focusById(
+    props.exercise.history.length > 0 ? `history-toggle-${id.value}` : `weight-${id.value}`,
+  )
 }
 </script>
 
 <template>
-  <article class="border-t border-gray-100 pt-4" :aria-labelledby="`exercise-${exercise.id}`">
-    <div class="flex min-w-0 items-start justify-between gap-2">
+  <article class="border-t border-gray-100 pt-4" :aria-labelledby="`exercise-${id}`">
+    <div class="flex min-w-0 items-start justify-between gap-1">
       <div class="min-w-0 py-1">
-        <h4 :id="`exercise-${exercise.id}`" class="break-words text-lg font-semibold text-gray-800">
+        <h4 :id="`exercise-${id}`" class="break-words text-lg font-semibold text-gray-800">
           {{ exercise.name }}
         </h4>
         <a
@@ -165,43 +278,159 @@ function formatDate(dateString: string) {
           class="inline-flex min-h-11 items-center rounded-lg text-sm font-medium text-blue-700 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
         >
           Anleitung ansehen
-          <span class="sr-only"> (öffnet in einem neuen Tab)</span>
+          <span class="sr-only"> zu {{ exercise.name }} (öffnet in einem neuen Tab)</span>
         </a>
       </div>
 
-      <button
-        type="button"
-        class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
-        :aria-label="`Übung ${exercise.name} löschen`"
-        :aria-expanded="confirmExerciseDelete"
-        :aria-controls="`delete-exercise-${exercise.id}`"
-        @click="confirmExerciseDelete = !confirmExerciseDelete"
-      >
-        <svg
-          aria-hidden="true"
-          class="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+      <div class="flex shrink-0">
+        <button
+          :id="`edit-exercise-btn-${id}`"
+          type="button"
+          :class="[
+            iconButtonClass,
+            'hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-blue-600',
+          ]"
+          :aria-label="`Übung ${exercise.name} bearbeiten`"
+          :aria-expanded="editingExercise"
+          :aria-controls="`edit-exercise-form-${id}`"
+          @click="editingExercise ? closeExerciseEdit() : startExerciseEdit()"
         >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M6 18 18 6M6 6l12 12"
-          />
-        </svg>
-      </button>
+          <svg
+            aria-hidden="true"
+            class="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              :d="PENCIL_ICON_PATH"
+            />
+          </svg>
+        </button>
+        <button
+          :id="`delete-exercise-btn-${id}`"
+          type="button"
+          :class="[
+            iconButtonClass,
+            'hover:bg-red-50 hover:text-red-700 focus-visible:outline-red-600',
+          ]"
+          :aria-label="`Übung ${exercise.name} löschen`"
+          :aria-expanded="confirmExerciseDelete"
+          :aria-controls="`delete-exercise-${id}`"
+          @click="toggleExerciseDelete"
+        >
+          <svg
+            aria-hidden="true"
+            class="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              :d="TRASH_ICON_PATH"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
+
+    <form
+      v-if="editingExercise"
+      :id="`edit-exercise-form-${id}`"
+      class="mt-2 rounded-lg bg-blue-50 p-3"
+      novalidate
+      @submit.prevent="handleUpdateExercise"
+      @keydown.esc="closeExerciseEdit"
+    >
+      <fieldset>
+        <legend class="font-semibold text-gray-900">Übung bearbeiten</legend>
+        <div class="mt-2 space-y-3">
+          <label class="block text-sm font-medium text-gray-700">
+            Name der Übung
+            <input
+              :id="`edit-exercise-name-${id}`"
+              v-model="exerciseForm.name"
+              type="text"
+              autocomplete="off"
+              required
+              :maxlength="MAX_NAME_LENGTH"
+              :class="inputClass"
+              :aria-invalid="Boolean(exerciseFormErrors.name)"
+              :aria-describedby="
+                describedBy(Boolean(exerciseFormErrors.name) && `edit-exercise-name-error-${id}`)
+              "
+            />
+          </label>
+          <p
+            v-if="exerciseFormErrors.name"
+            :id="`edit-exercise-name-error-${id}`"
+            class="text-sm text-red-700"
+          >
+            {{ exerciseFormErrors.name }}
+          </p>
+          <label class="block text-sm font-medium text-gray-700">
+            Anleitung als Link
+            <span class="font-normal text-gray-600">(optional)</span>
+            <input
+              :id="`edit-exercise-url-${id}`"
+              v-model="exerciseForm.videoUrl"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              maxlength="2048"
+              placeholder="https://…"
+              :class="inputClass"
+              :aria-invalid="Boolean(exerciseFormErrors.videoUrl)"
+              :aria-describedby="
+                describedBy(Boolean(exerciseFormErrors.videoUrl) && `edit-exercise-url-error-${id}`)
+              "
+            />
+          </label>
+          <p
+            v-if="exerciseFormErrors.videoUrl"
+            :id="`edit-exercise-url-error-${id}`"
+            class="text-sm text-red-700"
+          >
+            {{ exerciseFormErrors.videoUrl }}
+          </p>
+        </div>
+      </fieldset>
+      <p v-if="exerciseFormErrors.form" class="mt-2 text-sm text-red-700" role="alert">
+        {{ exerciseFormErrors.form }}
+      </p>
+      <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
+        <button
+          type="submit"
+          class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+        >
+          Änderungen speichern
+        </button>
+        <button type="button" :class="[secondaryButtonClass, 'flex-1']" @click="closeExerciseEdit">
+          Abbrechen
+        </button>
+      </div>
+    </form>
 
     <div
       v-if="confirmExerciseDelete"
-      :id="`delete-exercise-${exercise.id}`"
+      :id="`delete-exercise-${id}`"
       class="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-950"
       role="group"
       :aria-label="`Löschen von ${exercise.name} bestätigen`"
     >
-      <p>Übung und gesamte Historie wirklich löschen?</p>
+      <p>
+        Übung „{{ exercise.name }}“ mit {{ totalHistorySets }}
+        {{ totalHistorySets === 1 ? 'Satz' : 'Sätzen' }} wirklich löschen?
+      </p>
+      <p v-if="exerciseDeleteError" class="mt-2 text-red-800" role="alert">
+        {{ exerciseDeleteError }}
+      </p>
       <div class="mt-2 flex flex-wrap gap-2">
         <button
           type="button"
@@ -211,9 +440,10 @@ function formatDate(dateString: string) {
           Endgültig löschen
         </button>
         <button
+          :id="`delete-exercise-cancel-${id}`"
           type="button"
-          class="min-h-11 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-          @click="confirmExerciseDelete = false"
+          :class="secondaryButtonClass"
+          @click="cancelExerciseDelete"
         >
           Abbrechen
         </button>
@@ -225,31 +455,36 @@ function formatDate(dateString: string) {
         <label class="min-w-0 text-xs font-medium text-gray-700">
           Gewicht (kg)
           <input
+            :id="`weight-${id}`"
             v-model="newSet.weight"
             type="text"
             inputmode="decimal"
             autocomplete="off"
             maxlength="8"
             enterkeyhint="next"
-            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            required
+            :class="inputClass"
             placeholder="z. B. 42,5"
-            :aria-invalid="Boolean(setError)"
-            :aria-describedby="setError ? `set-error-${exercise.id}` : undefined"
+            :aria-invalid="Boolean(newSetErrors.weight)"
+            :aria-describedby="describedBy(Boolean(newSetErrors.weight) && `weight-error-${id}`)"
+            @keydown.enter="handleWeightEnter"
           />
         </label>
         <label class="min-w-0 text-xs font-medium text-gray-700">
           Wiederholungen
           <input
+            :id="`reps-${id}`"
             v-model="newSet.reps"
             type="text"
             inputmode="numeric"
             autocomplete="off"
             maxlength="4"
             enterkeyhint="done"
-            class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 px-3 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            required
+            :class="inputClass"
             placeholder="z. B. 10"
-            :aria-invalid="Boolean(setError)"
-            :aria-describedby="setError ? `set-error-${exercise.id}` : undefined"
+            :aria-invalid="Boolean(newSetErrors.reps)"
+            :aria-describedby="describedBy(Boolean(newSetErrors.reps) && `reps-error-${id}`)"
           />
         </label>
         <button
@@ -259,13 +494,14 @@ function formatDate(dateString: string) {
           Satz speichern
         </button>
       </div>
-      <p
-        v-if="setError"
-        :id="`set-error-${exercise.id}`"
-        class="mt-2 text-sm text-red-700"
-        role="alert"
-      >
-        {{ setError }}
+      <p v-if="newSetErrors.weight" :id="`weight-error-${id}`" class="mt-2 text-sm text-red-700">
+        {{ newSetErrors.weight }}
+      </p>
+      <p v-if="newSetErrors.reps" :id="`reps-error-${id}`" class="mt-2 text-sm text-red-700">
+        {{ newSetErrors.reps }}
+      </p>
+      <p v-if="newSetErrors.form" class="mt-2 text-sm text-red-700" role="alert">
+        {{ newSetErrors.form }}
       </p>
       <p class="sr-only" aria-live="polite">{{ setStatus }}</p>
     </form>
@@ -273,20 +509,21 @@ function formatDate(dateString: string) {
     <section
       v-if="exercise.history.length > 0"
       class="mt-3"
-      :aria-labelledby="`history-heading-${exercise.id}`"
+      :aria-labelledby="`history-heading-${id}`"
     >
-      <h5 :id="`history-heading-${exercise.id}`" class="sr-only">Trainingshistorie</h5>
+      <h5 :id="`history-heading-${id}`" class="sr-only">Trainingshistorie {{ exercise.name }}</h5>
       <button
+        :id="`history-toggle-${id}`"
         type="button"
         class="flex min-h-11 w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 text-left transition-colors hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
         :aria-expanded="historyExpanded"
-        :aria-controls="historyId"
-        @click="historyExpanded = !historyExpanded"
+        :aria-controls="`history-${id}`"
+        @click="toggleHistory"
       >
         <span class="min-w-0">
           <span class="block text-sm font-semibold text-gray-700">Trainingshistorie</span>
-          <span v-if="latestSession" class="block truncate text-xs text-gray-500">
-            Zuletzt {{ formatDate(latestSession.date) }} · {{ totalHistorySets }}
+          <span v-if="latestSession" class="block text-xs text-gray-600">
+            Zuletzt {{ formatDateKey(latestSession.date) }} · {{ totalHistorySets }}
             {{ totalHistorySets === 1 ? 'Satz' : 'Sätze' }} insgesamt
           </span>
         </span>
@@ -298,23 +535,28 @@ function formatDate(dateString: string) {
           viewBox="0 0 24 24"
           stroke="currentColor"
         >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 9-7 7-7-7" />
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            :d="CHEVRON_ICON_PATH"
+          />
         </svg>
       </button>
 
       <Transition>
-        <div v-show="historyExpanded" :id="historyId" class="mt-2 space-y-3 text-sm">
-          <section
-            v-for="session in exercise.history"
+        <div v-if="historyExpanded" :id="`history-${id}`" class="mt-2 space-y-3 text-sm">
+          <div
+            v-for="session in visibleSessions"
             :key="session.date"
             class="rounded-lg bg-gray-50 p-3"
-            :aria-labelledby="`session-${exercise.id}-${session.date}`"
           >
             <h6
-              :id="`session-${exercise.id}-${session.date}`"
-              class="mb-1 font-semibold text-gray-800"
+              :id="`session-${id}-${session.date}`"
+              class="mb-1 font-semibold text-gray-800 focus:outline-none"
+              tabindex="-1"
             >
-              {{ formatDate(session.date) }}
+              {{ formatDateKey(session.date) }}
             </h6>
             <ul class="space-y-1">
               <li
@@ -327,45 +569,67 @@ function formatDate(dateString: string) {
                   class="rounded-lg border border-blue-200 bg-white p-2"
                   novalidate
                   @submit.prevent="handleUpdateSet(set.id)"
+                  @keydown.esc="cancelSetEdit(set.id)"
                 >
-                  <p class="mb-2 font-semibold text-gray-800">Satz bearbeiten</p>
+                  <p class="mb-2 font-semibold text-gray-800">
+                    {{ setLabel(session, index) }} bearbeiten
+                  </p>
                   <div class="grid grid-cols-2 gap-2">
                     <label class="min-w-0 text-xs font-medium text-gray-700">
                       Gewicht (kg)
                       <input
+                        :id="`set-edit-weight-${set.id}`"
                         v-model="editSet.weight"
                         type="text"
                         inputmode="decimal"
+                        autocomplete="off"
                         maxlength="8"
-                        class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 px-2 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                        :aria-invalid="Boolean(editError)"
+                        required
+                        :class="inputClass"
+                        :aria-invalid="Boolean(editSetErrors.weight)"
                         :aria-describedby="
-                          editError ? `edit-error-${exercise.id}-${set.id}` : undefined
+                          describedBy(
+                            Boolean(editSetErrors.weight) && `set-edit-weight-error-${set.id}`,
+                          )
                         "
                       />
                     </label>
                     <label class="min-w-0 text-xs font-medium text-gray-700">
                       Wiederholungen
                       <input
+                        :id="`set-edit-reps-${set.id}`"
                         v-model="editSet.reps"
                         type="text"
                         inputmode="numeric"
+                        autocomplete="off"
                         maxlength="4"
-                        class="mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-300 px-2 text-base focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                        :aria-invalid="Boolean(editError)"
+                        required
+                        :class="inputClass"
+                        :aria-invalid="Boolean(editSetErrors.reps)"
                         :aria-describedby="
-                          editError ? `edit-error-${exercise.id}-${set.id}` : undefined
+                          describedBy(
+                            Boolean(editSetErrors.reps) && `set-edit-reps-error-${set.id}`,
+                          )
                         "
                       />
                     </label>
                   </div>
                   <p
-                    v-if="editError"
-                    :id="`edit-error-${exercise.id}-${set.id}`"
+                    v-if="editSetErrors.weight"
+                    :id="`set-edit-weight-error-${set.id}`"
                     class="mt-2 text-red-700"
-                    role="alert"
                   >
-                    {{ editError }}
+                    {{ editSetErrors.weight }}
+                  </p>
+                  <p
+                    v-if="editSetErrors.reps"
+                    :id="`set-edit-reps-error-${set.id}`"
+                    class="mt-2 text-red-700"
+                  >
+                    {{ editSetErrors.reps }}
+                  </p>
+                  <p v-if="editSetErrors.form" class="mt-2 text-red-700" role="alert">
+                    {{ editSetErrors.form }}
                   </p>
                   <div class="mt-2 flex flex-wrap gap-2">
                     <button
@@ -376,8 +640,8 @@ function formatDate(dateString: string) {
                     </button>
                     <button
                       type="button"
-                      class="min-h-11 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-                      @click="cancelEdit"
+                      :class="secondaryButtonClass"
+                      @click="cancelSetEdit(set.id)"
                     >
                       Abbrechen
                     </button>
@@ -388,9 +652,15 @@ function formatDate(dateString: string) {
                   v-else-if="confirmSetDeleteId === set.id"
                   class="rounded-lg border border-red-200 bg-white p-2 text-red-950"
                   role="group"
-                  :aria-label="`Löschen von Satz ${session.sets.length - index} bestätigen`"
+                  :aria-label="`Löschen von ${setLabel(session, index)} bestätigen`"
                 >
-                  <p>Diesen Satz wirklich löschen?</p>
+                  <p>
+                    {{ setLabel(session, index) }} ({{ formatWeight(set.weight) }} kg ×
+                    {{ set.reps }} Wdh.) wirklich löschen?
+                  </p>
+                  <p v-if="setDeleteError" class="mt-2 text-red-800" role="alert">
+                    {{ setDeleteError }}
+                  </p>
                   <div class="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -400,9 +670,10 @@ function formatDate(dateString: string) {
                       Löschen
                     </button>
                     <button
+                      :id="`set-delete-cancel-${set.id}`"
                       type="button"
-                      class="min-h-11 rounded-lg border border-gray-300 bg-white px-4 font-semibold text-gray-800 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-                      @click="confirmSetDeleteId = null"
+                      :class="secondaryButtonClass"
+                      @click="cancelSetDelete(set.id)"
                     >
                       Abbrechen
                     </button>
@@ -411,19 +682,23 @@ function formatDate(dateString: string) {
 
                 <div v-else class="flex min-w-0 items-center justify-between gap-1">
                   <div class="min-w-0">
-                    <span class="block text-xs text-gray-500"
+                    <span class="block text-xs text-gray-600"
                       >Satz {{ session.sets.length - index }}</span
                     >
                     <span class="font-mono font-medium text-gray-900">
-                      {{ set.weight }} kg × {{ set.reps }} Wdh.
+                      {{ formatWeight(set.weight) }} kg × {{ set.reps }} Wdh.
                     </span>
                   </div>
                   <div class="flex shrink-0">
                     <button
+                      :id="`set-edit-btn-${set.id}`"
                       type="button"
-                      class="inline-flex min-h-12 min-w-12 items-center justify-center rounded-lg text-gray-600 hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-                      :aria-label="`Satz ${session.sets.length - index} bearbeiten`"
-                      @click="startEdit(set)"
+                      :class="[
+                        iconButtonClass,
+                        'min-h-12 min-w-12 hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-blue-600',
+                      ]"
+                      :aria-label="`${setLabel(session, index)} bearbeiten`"
+                      @click="startSetEdit(set)"
                     >
                       <svg
                         aria-hidden="true"
@@ -436,14 +711,18 @@ function formatDate(dateString: string) {
                           stroke-linecap="round"
                           stroke-linejoin="round"
                           stroke-width="2"
-                          d="m16.862 3.487 1.651-1.65a1.875 1.875 0 1 1 2.652 2.652L10.582 15.072a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.686a4.5 4.5 0 0 1 1.13-1.897L16.862 3.487Zm0 0L19.5 6.125M18 14.25v4.125A2.625 2.625 0 0 1 15.375 21H5.625A2.625 2.625 0 0 1 3 18.375V8.625A2.625 2.625 0 0 1 5.625 6H9.75"
+                          :d="PENCIL_ICON_PATH"
                         />
                       </svg>
                     </button>
                     <button
+                      :id="`set-delete-btn-${set.id}`"
                       type="button"
-                      class="inline-flex min-h-12 min-w-12 items-center justify-center rounded-lg text-gray-600 hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
-                      :aria-label="`Satz ${session.sets.length - index} löschen`"
+                      :class="[
+                        iconButtonClass,
+                        'min-h-12 min-w-12 hover:bg-red-50 hover:text-red-700 focus-visible:outline-red-600',
+                      ]"
+                      :aria-label="`${setLabel(session, index)} löschen`"
                       @click="askToDeleteSet(set.id)"
                     >
                       <svg
@@ -457,7 +736,7 @@ function formatDate(dateString: string) {
                           stroke-linecap="round"
                           stroke-linejoin="round"
                           stroke-width="2"
-                          d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0 1 15.916 21H8.084a2.25 2.25 0 0 1-2.244-1.327L4.772 5.79m14.456 0A48.108 48.108 0 0 0 15.75 5.5m-11.978.29c.34-.059.68-.114 1.022-.165m0 0A48.11 48.11 0 0 1 8.25 5.5m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201V5.5m7.5 0a48.667 48.667 0 0 0-7.5 0"
+                          :d="TRASH_ICON_PATH"
                         />
                       </svg>
                     </button>
@@ -465,7 +744,17 @@ function formatDate(dateString: string) {
                 </div>
               </li>
             </ul>
-          </section>
+          </div>
+
+          <button
+            v-if="hiddenSessionCount > 0"
+            type="button"
+            class="min-h-11 w-full rounded-lg px-3 text-left font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+            @click="showMoreSessions"
+          >
+            Ältere Einheiten anzeigen
+            <span class="font-normal text-gray-600">({{ hiddenSessionCount }} weitere)</span>
+          </button>
         </div>
       </Transition>
     </section>

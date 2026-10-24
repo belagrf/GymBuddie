@@ -1,10 +1,11 @@
-import { onBeforeUnmount, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref } from 'vue'
 
 const DEFAULT_DURATION_MS = 4_000
 
 export function useTransientMessage(durationMs = DEFAULT_DURATION_MS) {
   const message = ref('')
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let generation = 0
 
   function cancelTimeout() {
     if (timeout === undefined) return
@@ -13,24 +14,44 @@ export function useTransientMessage(durationMs = DEFAULT_DURATION_MS) {
     timeout = undefined
   }
 
-  function clear() {
-    cancelTimeout()
-    message.value = ''
-  }
-
-  function show(value: string) {
-    cancelTimeout()
-    message.value = value
-
-    if (!value) return
-
+  function startTimeout() {
     timeout = setTimeout(() => {
       message.value = ''
       timeout = undefined
     }, durationMs)
   }
 
-  onBeforeUnmount(cancelTimeout)
+  function clear() {
+    generation += 1
+    cancelTimeout()
+    message.value = ''
+  }
+
+  function show(value: string) {
+    generation += 1
+    cancelTimeout()
+
+    if (value && value === message.value) {
+      // Live regions only announce DOM changes, so an identical message is removed and
+      // re-inserted after a render to make screen readers repeat it.
+      const current = generation
+      message.value = ''
+      void nextTick(() => {
+        if (current !== generation) return
+        message.value = value
+        startTimeout()
+      })
+      return
+    }
+
+    message.value = value
+    if (value) startTimeout()
+  }
+
+  onBeforeUnmount(() => {
+    generation += 1
+    cancelTimeout()
+  })
 
   return { message, show, clear }
 }

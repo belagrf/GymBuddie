@@ -8,9 +8,13 @@ export const MAX_CATEGORIES = 100
 export const MAX_EXERCISES_PER_CATEGORY = 500
 export const MAX_HISTORY_ENTRIES_PER_EXERCISE = 5_000
 export const MAX_SETS_PER_SESSION = 1_000
+export const MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
-const MAX_ID_LENGTH = 128
 const MAX_RECORDED_ISSUES = 50
+
+// IDs end up in DOM ids, ARIA references, and lookup keys, so only a conservative charset is kept.
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype'])
 
 export interface SetEntry {
   id: string
@@ -47,6 +51,8 @@ export interface GymDataExport extends GymDataEnvelope {
   exportedAt: string
 }
 
+export type GymDataParseFailureReason = 'invalid-json' | 'unsupported-version' | 'invalid-format'
+
 export type GymDataParseResult =
   | {
       ok: true
@@ -54,6 +60,26 @@ export type GymDataParseResult =
       issues: string[]
       migrated: boolean
       needsRewrite: boolean
+    }
+  | {
+      ok: false
+      reason: GymDataParseFailureReason
+      error: string
+    }
+
+export interface GymDataSummary {
+  categories: number
+  exercises: number
+  sets: number
+}
+
+export type BackupParseResult =
+  | {
+      ok: true
+      categories: Category[]
+      issues: string[]
+      summary: GymDataSummary
+      exportedAt: string | null
     }
   | {
       ok: false
@@ -117,9 +143,12 @@ export function isValidSetValues(weight: unknown, reps: unknown): boolean {
   )
 }
 
+const URL_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*):/i
+
 /**
  * Normalizes optional video URLs. An empty value becomes an empty string, while
- * invalid, non-HTTP(S), or overlong values return null.
+ * invalid, non-HTTP(S), or overlong values return null. Inputs without a scheme
+ * whose host contains a dot (for example `youtube.com/watch?v=…`) get `https://`.
  */
 export function normalizeVideoUrl(value: unknown): string | null {
   if (value === undefined || value === null) return ''
@@ -127,12 +156,17 @@ export function normalizeVideoUrl(value: unknown): string | null {
 
   const trimmed = value.trim()
   if (!trimmed) return ''
-  if (trimmed.length > MAX_VIDEO_URL_LENGTH) return null
+
+  // "youtube.com:443/x" parses as scheme "youtube.com:", so a dotted prefix is a host, not a scheme.
+  const scheme = URL_SCHEME_PATTERN.exec(trimmed)?.[1]
+  const hasScheme = scheme !== undefined && !scheme.includes('.')
 
   try {
-    const url = new URL(trimmed)
+    const url = new URL(hasScheme ? trimmed : `https://${trimmed}`)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    return url.href
+    if (!hasScheme && !url.hostname.includes('.')) return null
+    // Check the canonical form: percent-encoding can make it longer than the input.
+    return url.href.length <= MAX_VIDEO_URL_LENGTH ? url.href : null
   } catch {
     return null
   }
@@ -169,22 +203,26 @@ export function normalizeName(value: unknown): string | null {
   return trimmed
 }
 
-function uniqueId(value: unknown, usedIds: Set<string>, context: SanitizeContext): string {
-  const candidate =
-    typeof value === 'string' && value.trim() && value.trim().length <= MAX_ID_LENGTH
-      ? value.trim()
-      : null
+export function isSafeId(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_ID_PATTERN.test(value) && !RESERVED_IDS.has(value)
+}
 
-  if (candidate && !usedIds.has(candidate)) {
-    usedIds.add(candidate)
-    if (candidate !== value) context.needsRewrite = true
-    return candidate
+function uniqueId(value: unknown, usedIds: Set<string>, context: SanitizeContext): string {
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+
+  if (isSafeId(trimmed) && !usedIds.has(trimmed)) {
+    usedIds.add(trimmed)
+    if (trimmed !== value) context.needsRewrite = true
+    return trimmed
   }
 
-  let generated = createId()
-  while (usedIds.has(generated)) generated = createId()
-  usedIds.add(generated)
-  recordIssue(context, 'Eine fehlende oder doppelte ID wurde ersetzt.')
+  const generated = generatedUniqueId(usedIds)
+  if (trimmed && !isSafeId(trimmed)) {
+    // An ID with unusual characters is replaced silently; no training data is lost.
+    context.needsRewrite = true
+  } else {
+    recordIssue(context, 'Eine fehlende oder doppelte ID wurde ersetzt.')
+  }
   return generated
 }
 
@@ -426,9 +464,12 @@ export function parseGymData(serialized: string): GymDataParseResult {
   try {
     parsed = JSON.parse(serialized)
   } catch {
-    return { ok: false, error: 'Die Datei enthält kein gültiges JSON.' }
+    return { ok: false, reason: 'invalid-json', error: 'Die Datei enthält kein gültiges JSON.' }
   }
+  return parseGymValue(parsed)
+}
 
+function parseGymValue(parsed: unknown): GymDataParseResult {
   let categoryValue: unknown
   let envelopeNeedsRewrite = false
   let unwrappedLegacyData = false
@@ -439,15 +480,27 @@ export function parseGymData(serialized: string): GymDataParseResult {
     unwrappedLegacyData = true
   } else if (isRecord(parsed)) {
     if ('version' in parsed && parsed.version !== GYM_DATA_VERSION) {
-      return { ok: false, error: `Datenversion ${String(parsed.version)} wird nicht unterstützt.` }
+      const version =
+        typeof parsed.version === 'number' && Number.isInteger(parsed.version)
+          ? `Datenversion ${parsed.version}`
+          : 'Diese Datenversion'
+      return {
+        ok: false,
+        reason: 'unsupported-version',
+        error: `${version} wird nicht unterstützt. Bitte aktualisiere GymBuddie.`,
+      }
     }
     if (!('categories' in parsed) || !Array.isArray(parsed.categories)) {
-      return { ok: false, error: 'Die Datei enthält keine gültige Kategorienliste.' }
+      return {
+        ok: false,
+        reason: 'invalid-format',
+        error: 'Die Datei enthält keine gültige Kategorienliste.',
+      }
     }
     categoryValue = parsed.categories
     envelopeNeedsRewrite = parsed.version !== GYM_DATA_VERSION
   } else {
-    return { ok: false, error: 'Das Datenformat wird nicht unterstützt.' }
+    return { ok: false, reason: 'invalid-format', error: 'Das Datenformat wird nicht unterstützt.' }
   }
 
   try {
@@ -460,7 +513,60 @@ export function parseGymData(serialized: string): GymDataParseResult {
       needsRewrite: envelopeNeedsRewrite || sanitized.needsRewrite || sanitized.migrated,
     }
   } catch {
-    return { ok: false, error: 'Die Daten konnten nicht sicher verarbeitet werden.' }
+    return {
+      ok: false,
+      reason: 'invalid-format',
+      error: 'Die Daten konnten nicht sicher verarbeitet werden.',
+    }
+  }
+}
+
+export function summarizeCategories(categories: Category[]): GymDataSummary {
+  let exercises = 0
+  let sets = 0
+  for (const category of categories) {
+    exercises += category.exercises.length
+    for (const exercise of category.exercises) {
+      for (const session of exercise.history) sets += session.sets.length
+    }
+  }
+  return { categories: categories.length, exercises, sets }
+}
+
+/**
+ * Parses a backup file chosen by the user. Unlike stored data, a file must carry the
+ * GymBuddie envelope and contain at least one usable category, so picking the wrong
+ * JSON file can never replace the training data with nothing.
+ */
+export function parseBackupFile(serialized: string): BackupParseResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    return { ok: false, error: 'Die Datei enthält kein gültiges JSON.' }
+  }
+
+  if (!isRecord(parsed) || parsed.app !== 'GymBuddie') {
+    return { ok: false, error: 'Die Datei ist kein GymBuddie-Backup.' }
+  }
+
+  const result = parseGymValue(parsed)
+  if (!result.ok) return { ok: false, error: result.error }
+  if (result.categories.length === 0) {
+    return { ok: false, error: 'Das Backup enthält keine verwendbaren Trainingsdaten.' }
+  }
+
+  const exportedAt =
+    typeof parsed.exportedAt === 'string' && !Number.isNaN(Date.parse(parsed.exportedAt))
+      ? parsed.exportedAt
+      : null
+
+  return {
+    ok: true,
+    categories: result.categories,
+    issues: result.issues,
+    summary: summarizeCategories(result.categories),
+    exportedAt,
   }
 }
 
