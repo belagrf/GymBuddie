@@ -1,7 +1,10 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const port = 4173
-const baseURL = `http://127.0.0.1:${port}/GymBuddie/`
+import { resolveBasePath } from './scripts/base-path'
+
+// A dedicated port so a stale `npm run preview` (4173) is never mistaken for the test build.
+const port = 4174
+const baseURL = `http://127.0.0.1:${port}${resolveBasePath()}`
 
 export default defineConfig({
   testDir: './tests/e2e',
