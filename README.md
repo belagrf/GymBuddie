@@ -145,7 +145,7 @@ Wichtige Projektbereiche:
 
 ### Voraussetzungen
 
-- Node.js 24 oder neuer
+- Node.js 24.15 oder neuer
 - npm 11 oder neuer
 
 ### Projekt starten
@@ -174,7 +174,8 @@ Die lokale Anwendung ist standardmäßig unter
 | `npm run test:e2e`         | Browser-, Offline- und axe-Tests ausführen               |
 | `npm run test`             | Unit-Tests und anschließend Browser-Tests ausführen      |
 | `npm run audit`            | Bei hohen oder kritischen Sicherheitslücken fehlschlagen |
-| `npm run check`            | Lint, Format, Unit-Tests, Typen, Build und PWA prüfen    |
+| `npm run lockfile:check`   | Prüfen, ob `package-lock.json` zu `package.json` passt   |
+| `npm run check`            | Lockfile, Lint, Format, Unit-Tests, Typen, Build und PWA |
 | `npm run verify:pwa`       | Vorhandenen `dist`-Build auf PWA-Artefakte prüfen        |
 
 Für die vollständige lokale Prüfung:
