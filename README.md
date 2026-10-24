@@ -27,13 +27,15 @@ Aktivierung des Service Workers funktioniert die App auch ohne Internetverbindun
 
 ## Funktionen
 
-- Trainingskategorien und Übungen verwalten
-- Gewicht und Wiederholungen für einzelne Sätze erfassen
+- Trainingskategorien und Übungen verwalten, umbenennen und bearbeiten, ohne die Historie zu verlieren
+- Gewicht (mit Dezimalkomma, z. B. `42,5`) und Wiederholungen für einzelne Sätze erfassen
 - Gespeicherte Sätze nachträglich bearbeiten oder löschen
-- Trainingshistorie nach Trainingstag gruppiert anzeigen, neueste Einträge zuerst
+- Trainingshistorie nach Trainingstag gruppiert anzeigen: die letzten drei Einheiten sofort,
+  ältere auf Wunsch
 - Tagesfortschritt direkt auf der Startseite sehen
-- Optionale HTTP(S)-Links zu Übungsanleitungen hinterlegen
-- Vollständige JSON-Backups exportieren und kontrolliert importieren
+- Optionale Links zu Übungsanleitungen hinterlegen (`youtube.com/…` wird automatisch zu `https://…`)
+- Vollständige JSON-Backups exportieren und nach einer Vorschau kontrolliert importieren
+- Automatische Sicherungskopien vor dem Ersetzen oder Bereinigen von Daten
 - Als App installieren und nach dem ersten Laden offline verwenden
 - Tastaturbedienbare, responsive Oberfläche mit Unterstützung für reduzierte Animationen
 
@@ -66,6 +68,11 @@ bereitsteht, bietet die App ein kontrolliertes Update an.
 2. Die Installationsfunktion des Browsers beziehungsweise **Zum Home-Bildschirm** verwenden.
 3. Die App einmal vollständig online laden, damit die Offline-Dateien gespeichert werden.
 
+> **iPhone und iPad:** Eine über **Zum Home-Bildschirm** installierte App hat einen eigenen,
+> von Safari getrennten Speicher. Wer GymBuddie vorher in Safari genutzt hat, exportiert dort ein
+> Backup und importiert es anschließend in der installierten App. Danach am besten nur noch die
+> installierte App verwenden.
+
 Der Entwicklungsserver registriert bewusst keinen produktiven Service Worker. Offline- und
 Update-Verhalten deshalb über einen Produktions-Build mit `npm run preview` prüfen.
 
@@ -77,18 +84,32 @@ Update-Verhalten deshalb über einen Produktions-Build mit `npm run preview` pr�
 > vorher kein Backup erstellt wurde.
 
 Unter **Daten sichern → Backup exportieren** lässt sich jederzeit eine vollständige JSON-Datei
-mit dem Namen `gymbuddie-backup-YYYY-MM-DD.json` erstellen. Der Import akzeptiert JSON-Dateien bis
-5 MB und zeigt zuerst eine Bestätigung an, da **Daten ersetzen** den aktuell gespeicherten Bestand
-vollständig überschreibt.
+mit dem Namen `gymbuddie-backup-YYYY-MM-DD.json` erstellen. Der Bereich zeigt außerdem, wann zuletzt
+ein Backup erstellt wurde und ob der Browser die Daten dauerhaft speichert. Nach dem ersten
+gespeicherten Satz bittet GymBuddie den Browser um dauerhaften Speicher (Firefox fragt dabei einmal
+nach). Ohne diese Freigabe kann der Browser die Daten bei Speichermangel löschen – Safari tut das für
+nicht installierte Websites bereits nach sieben Tagen ohne Nutzung. Regelmäßige Backups bleiben
+deshalb wichtig.
+
+Der Import akzeptiert nur GymBuddie-Backups bis 20 MB mit mindestens einer gültigen Kategorie. Vor
+dem Ersetzen zeigt GymBuddie eine Vorschau mit Kategorien, Übungen und Sätzen des Backups sowie des
+aktuellen Stands und bietet an, die aktuellen Daten zuerst zu exportieren.
 
 Die lokale Datenhaltung umfasst:
 
 - ein versioniertes Speicherformat unter `gymbuddie:data:v2`,
+- sofortiges Speichern jeder Änderung; schlägt das Speichern fehl, wird die Änderung zurückgenommen
+  und der Fehler direkt am Formular angezeigt,
 - automatische Bereinigung und Validierung importierter Daten,
 - sichere Migration älterer `gymData`-Bestände,
-- eine unveränderte Sicherung des Altdatenbestands vor der Migration,
-- verständliche Fehlermeldungen bei Speicher- oder Importproblemen,
-- Synchronisierung zwischen geöffneten Tabs desselben Browsers.
+- Sicherungskopien unter `gymbuddie:backup:*`: der Altdatenbestand vor der Migration, bis zu drei
+  unveränderte Kopien beschädigter Daten und der Datenstand vor dem letzten Import. Sie lassen sich
+  unter **Daten sichern** herunterladen, wiederherstellen oder löschen. Die Import-Kopie wird bei
+  vollem Speicher als Erstes freigegeben,
+- Schreibschutz, solange unlesbare Daten weder gesichert noch bewusst verworfen wurden oder aus einer
+  neueren GymBuddie-Version stammen,
+- Synchronisierung zwischen geöffneten Tabs desselben Browsers; hat ein anderer Tab zuerst
+  gespeichert, wird dessen Stand geladen statt überschrieben.
 
 Backups enthalten die vollständige Trainingshistorie und sollten wie persönliche Dateien
 behandelt werden.
@@ -170,14 +191,16 @@ npm run audit
 Die automatisierten Prüfungen decken unter anderem folgende Fälle ab:
 
 - Migration alter und gemischter Datenschemata ohne Verlust gültiger Sätze
-- Wiederherstellung bei beschädigten lokalen Daten
-- Validierung von Namen, Gewichten, Wiederholungen und Video-URLs
-- transaktionaler Backup-Import
-- Persistenzfehler und Synchronisierung zwischen Browser-Tabs
+- Wiederherstellung bei beschädigten lokalen Daten, Sicherungskopien und Schreibschutz
+- Validierung von Namen, Gewichten, Wiederholungen, IDs und Video-URLs
+- Ablehnung fremder oder leerer Backups, Import-Vorschau und Wiederherstellung
+- Zurücknehmen fehlgeschlagener Änderungen und Konflikte zwischen Browser-Tabs
+- Tagesgrenze um Mitternacht mit festgelegter Uhrzeit statt echter Uhr
 - vollständiger Trainingsablauf bei einer Breite von 320 Pixeln
-- axe-core-Prüfung der leeren und befüllten Oberfläche
-- Service-Worker-Registrierung und Neuladen ohne Netzwerk
-- Vorhandensein von Manifest, Service Worker und Workbox-Dateien im Build
+- Fokusführung in einem reinen Tastaturablauf
+- axe-core-Prüfung der leeren und befüllten Oberfläche sowie geöffneter Formulare
+- Service-Worker-Registrierung, Neuladen ohne Netzwerk und Weiterleitung unbekannter Pfade
+- Manifest-Semantik (ID, Scope, keine Ausrichtungssperre, Symbolgrößen) im Build
 
 ## Deployment
 
@@ -185,13 +208,19 @@ Der Workflow [`.github/workflows/pages.yml`](./.github/workflows/pages.yml) läu
 und bei Änderungen an `main`.
 
 1. `npm ci` installiert exakt den Lockfile-Stand.
-2. Dependency-Audit, Linting, Formatierung, Unit-Tests, Typprüfung und Build werden ausgeführt.
-3. Chromium prüft Kernabläufe, Barrierefreiheit, Migration und Offline-Verhalten.
+2. Linting, Formatierung, Unit-Tests, Typprüfung und Build werden ausgeführt.
+3. Chromium prüft Kernabläufe, Barrierefreiheit, Migration und Offline-Verhalten; bei Fehlern
+   werden die Playwright-Ergebnisse als Artefakt hochgeladen.
 4. Die erzeugten PWA-Dateien werden nochmals explizit validiert.
-5. Nur bei `main` wird ausschließlich der erzeugte `dist`-Ordner auf GitHub Pages veröffentlicht.
+5. Das Dependency-Audit läuft nach den Tests, blockiert aber weiterhin das Deployment.
+6. Nur bei `main` wird ausschließlich der erzeugte `dist`-Ordner auf GitHub Pages veröffentlicht.
+   Nur dieser Job erhält Schreibrechte für Pages.
 
-Der Produktions-Basispfad wird in GitHub Actions aus `GITHUB_REPOSITORY` abgeleitet und kann für
-andere Ziele mit `VITE_BASE_PATH` überschrieben werden. In einem Fork muss GitHub Pages einmalig
+Dependabot schlägt wöchentlich gebündelte Updates für npm-Pakete und GitHub Actions vor.
+
+Der Produktions-Basispfad wird in GitHub Actions aus `GITHUB_REPOSITORY` abgeleitet
+(`<owner>.github.io`-Repositories werden unter `/` ausgeliefert) und kann für andere Ziele über die
+Repository-Variable `VITE_BASE_PATH` überschrieben werden. In einem Fork muss GitHub Pages einmalig
 auf **GitHub Actions** als Veröffentlichungsquelle eingestellt werden.
 
 Die öffentliche Version ist unter
