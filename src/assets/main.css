@@ -1,12 +1,137 @@
 @import 'tailwindcss';
 
+/*
+ * Semantic color tokens. Components use these (bg-surface, text-fg, border-line, …) instead of
+ * raw palette colors, so light and dark mode are two deliberate sets of values rather than a
+ * per-class `dark:` override. Accent buttons (blue/red/amber with white text) keep their raw
+ * colors because they pass contrast on both themes.
+ */
+@theme inline {
+  --color-page: var(--gb-page);
+  --color-surface: var(--gb-surface);
+  --color-surface-muted: var(--gb-surface-muted);
+  --color-surface-hover: var(--gb-surface-hover);
+  --color-fg: var(--gb-fg);
+  --color-fg-muted: var(--gb-fg-muted);
+  --color-fg-subtle: var(--gb-fg-subtle);
+  --color-fg-placeholder: var(--gb-fg-placeholder);
+  --color-line: var(--gb-line);
+  --color-line-subtle: var(--gb-line-subtle);
+  --color-line-strong: var(--gb-line-strong);
+  --color-accent-fg: var(--gb-accent-fg);
+  --color-accent-ring: var(--gb-accent-ring);
+  --color-focus: var(--gb-focus);
+  --color-info: var(--gb-info);
+  --color-info-line: var(--gb-info-line);
+  --color-danger-fg: var(--gb-danger-fg);
+  --color-danger-strong: var(--gb-danger-strong);
+  --color-danger-tint: var(--gb-danger-tint);
+  --color-danger-tint-strong: var(--gb-danger-tint-strong);
+  --color-danger-line: var(--gb-danger-line);
+  --color-focus-danger: var(--gb-focus-danger);
+  --color-warn-fg: var(--gb-warn-fg);
+  --color-warn-tint: var(--gb-warn-tint);
+  --color-warn-tint-strong: var(--gb-warn-tint-strong);
+  --color-warn-line: var(--gb-warn-line);
+  --color-focus-warn: var(--gb-focus-warn);
+  --color-success-fg: var(--gb-success-fg);
+  --color-record-fg: var(--gb-record-fg);
+  --color-record-tint: var(--gb-record-tint);
+  --color-inverse: var(--gb-inverse);
+  --color-inverse-hover: var(--gb-inverse-hover);
+  --color-inverse-fg: var(--gb-inverse-fg);
+  --color-focus-neutral: var(--gb-focus-neutral);
+  --color-chart-line: var(--gb-chart-line);
+  --color-chart-grid: var(--gb-chart-grid);
+}
+
+:root {
+  color-scheme: light;
+  --gb-page: oklch(98.5% 0.002 247.839); /* gray-50 */
+  --gb-surface: #fff;
+  --gb-surface-muted: oklch(98.5% 0.002 247.839); /* gray-50 */
+  --gb-surface-hover: oklch(96.7% 0.003 264.542); /* gray-100 */
+  --gb-fg: oklch(21% 0.034 264.665); /* gray-900 */
+  --gb-fg-muted: oklch(37.3% 0.034 259.733); /* gray-700 */
+  --gb-fg-subtle: oklch(44.6% 0.03 256.802); /* gray-600 */
+  --gb-fg-placeholder: oklch(55.1% 0.027 264.364); /* gray-500 */
+  --gb-line: oklch(92.8% 0.006 264.531); /* gray-200 */
+  --gb-line-subtle: oklch(96.7% 0.003 264.542); /* gray-100 */
+  --gb-line-strong: oklch(55.1% 0.027 264.364); /* gray-500, 3:1 for input borders */
+  --gb-accent-fg: oklch(48.8% 0.243 264.376); /* blue-700 */
+  --gb-accent-ring: oklch(88.2% 0.059 254.128); /* blue-200 */
+  --gb-focus: oklch(54.6% 0.245 262.881); /* blue-600 */
+  --gb-info: oklch(97% 0.014 254.604); /* blue-50 */
+  --gb-info-line: oklch(88.2% 0.059 254.128); /* blue-200 */
+  --gb-danger-fg: oklch(50.5% 0.213 27.518); /* red-700 */
+  --gb-danger-strong: oklch(25.8% 0.092 26.042); /* red-950 */
+  --gb-danger-tint: oklch(97.1% 0.013 17.38); /* red-50 */
+  --gb-danger-tint-strong: oklch(93.6% 0.032 17.717); /* red-100 */
+  --gb-danger-line: oklch(88.5% 0.062 18.334); /* red-200 */
+  --gb-focus-danger: oklch(50.5% 0.213 27.518); /* red-700 */
+  --gb-warn-fg: oklch(27.9% 0.077 45.635); /* amber-950 */
+  --gb-warn-tint: oklch(98.7% 0.022 95.277); /* amber-50 */
+  --gb-warn-tint-strong: oklch(96.2% 0.059 95.617); /* amber-100 */
+  --gb-warn-line: oklch(87.9% 0.169 91.605); /* amber-300 */
+  --gb-focus-warn: oklch(47.3% 0.137 46.201); /* amber-800 */
+  --gb-success-fg: oklch(44.8% 0.119 151.328); /* green-800 */
+  --gb-record-fg: oklch(47.3% 0.137 46.201); /* amber-800 */
+  --gb-record-tint: oklch(98.7% 0.022 95.277); /* amber-50 */
+  --gb-inverse: oklch(21% 0.034 264.665); /* gray-900 */
+  --gb-inverse-hover: oklch(37.3% 0.034 259.733); /* gray-700 */
+  --gb-inverse-fg: #fff;
+  --gb-focus-neutral: oklch(21% 0.034 264.665); /* gray-900 */
+  --gb-chart-line: oklch(54.6% 0.245 262.881); /* blue-600 */
+  --gb-chart-grid: oklch(92.8% 0.006 264.531); /* gray-200 */
+}
+
+:root.dark {
+  color-scheme: dark;
+  --gb-page: oklch(12.9% 0.042 264.695); /* slate-950 */
+  --gb-surface: oklch(20.8% 0.042 265.755); /* slate-900 */
+  --gb-surface-muted: oklch(27.9% 0.041 260.031); /* slate-800 */
+  --gb-surface-hover: oklch(27.9% 0.041 260.031); /* slate-800 */
+  --gb-fg: oklch(96.8% 0.007 247.896); /* slate-100 */
+  --gb-fg-muted: oklch(86.9% 0.022 252.894); /* slate-300 */
+  --gb-fg-subtle: oklch(70.4% 0.04 256.788); /* slate-400 */
+  --gb-fg-placeholder: oklch(70.4% 0.04 256.788); /* slate-400 */
+  --gb-line: oklch(37.2% 0.044 257.287); /* slate-700 */
+  --gb-line-subtle: oklch(27.9% 0.041 260.031); /* slate-800 */
+  --gb-line-strong: oklch(55.4% 0.046 257.417); /* slate-500, 3:1 on slate-900 */
+  --gb-accent-fg: oklch(80.9% 0.105 251.813); /* blue-300 */
+  --gb-accent-ring: oklch(42.4% 0.199 265.638); /* blue-800 */
+  --gb-focus: oklch(70.7% 0.165 254.624); /* blue-400 */
+  --gb-info: oklch(28.2% 0.091 267.935); /* blue-950 */
+  --gb-info-line: oklch(37.9% 0.146 265.522); /* blue-900 */
+  --gb-danger-fg: oklch(80.8% 0.114 19.571); /* red-300 */
+  --gb-danger-strong: oklch(88.5% 0.062 18.334); /* red-200 */
+  --gb-danger-tint: oklch(25.8% 0.092 26.042); /* red-950 */
+  --gb-danger-tint-strong: oklch(39.6% 0.141 25.723); /* red-900 */
+  --gb-danger-line: oklch(39.6% 0.141 25.723); /* red-900 */
+  --gb-focus-danger: oklch(70.4% 0.191 22.216); /* red-400 */
+  --gb-warn-fg: oklch(92.4% 0.12 95.746); /* amber-200 */
+  --gb-warn-tint: oklch(27.9% 0.077 45.635); /* amber-950 */
+  --gb-warn-tint-strong: oklch(41.4% 0.112 45.904); /* amber-900 */
+  --gb-warn-line: oklch(47.3% 0.137 46.201); /* amber-800 */
+  --gb-focus-warn: oklch(82.8% 0.189 84.429); /* amber-400 */
+  --gb-success-fg: oklch(87.1% 0.15 154.449); /* green-300 */
+  --gb-record-fg: oklch(82.8% 0.189 84.429); /* amber-400 */
+  --gb-record-tint: oklch(27.9% 0.077 45.635); /* amber-950 */
+  --gb-inverse: oklch(96.8% 0.007 247.896); /* slate-100 */
+  --gb-inverse-hover: oklch(86.9% 0.022 252.894); /* slate-300 */
+  --gb-inverse-fg: oklch(20.8% 0.042 265.755); /* slate-900 */
+  --gb-focus-neutral: oklch(96.8% 0.007 247.896); /* slate-100 */
+  --gb-chart-line: oklch(62.3% 0.214 259.815); /* blue-500, validated for the dark surface */
+  --gb-chart-grid: oklch(37.2% 0.044 257.287); /* slate-700 */
+}
+
 @layer base {
   html {
     min-width: 320px;
     min-height: 100%;
-    background: #f8fafc;
-    /* Keeps focused controls clear of the fixed update banner at the bottom. */
-    scroll-padding-bottom: 9rem;
+    background: var(--gb-page);
+    /* Keeps focused controls clear of the fixed bottom bars (rest timer, update banner). */
+    scroll-padding-bottom: 10rem;
   }
 
   body,

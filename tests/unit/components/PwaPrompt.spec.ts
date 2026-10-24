@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PwaPrompt from '@/components/PwaPrompt.vue'
 
@@ -13,6 +14,10 @@ function fakeRegistration(waiting: boolean) {
 }
 
 describe('PwaPrompt', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
   afterEach(() => {
     vi.useRealTimers()
   })

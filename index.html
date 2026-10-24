@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0f172a" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Apply the saved theme before the first paint, so dark mode never flashes white.
+      try {
+        var theme = JSON.parse(localStorage.getItem('gymbuddie:settings:v1') || '{}').theme
+        if (
+          theme === 'dark' ||
+          (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        )
+          document.documentElement.classList.add('dark')
+      } catch (error) {}
+    </script>
     <meta
       name="description"
       content="GymBuddie speichert deine Übungen, Sätze und Trainingshistorie direkt auf deinem Gerät – auch offline."

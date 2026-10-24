@@ -264,3 +264,124 @@ test('opens the app from index.html and unknown paths instead of a blank page', 
   await page.goto('./some/old/link')
   await expect(page.getByRole('heading', { level: 1, name: 'GymBuddie' })).toBeVisible()
 })
+
+function daysAgo(days: number) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return [
+    date.getFullYear().toString().padStart(4, '0'),
+    (date.getMonth() + 1).toString().padStart(2, '0'),
+    date.getDate().toString().padStart(2, '0'),
+  ].join('-')
+}
+
+async function seedTraining(page: Page) {
+  const data = {
+    app: 'GymBuddie',
+    version: 2,
+    updatedAt: new Date().toISOString(),
+    categories: [
+      {
+        id: 'push',
+        name: 'Push',
+        exercises: [
+          {
+            id: 'bench',
+            name: 'Bankdrücken',
+            history: [
+              {
+                date: daysAgo(3),
+                sets: [
+                  { id: 'b2', weight: 62.5, reps: 6 },
+                  { id: 'b1', weight: 60, reps: 8 },
+                ],
+              },
+              { date: daysAgo(7), sets: [{ id: 'a1', weight: 57.5, reps: 8 }] },
+            ],
+          },
+          { id: 'dips', name: 'Dips', history: [] },
+        ],
+      },
+      { id: 'pull', name: 'Pull', exercises: [{ id: 'rows', name: 'Rudern', history: [] }] },
+    ],
+  }
+  await page.goto('./')
+  await page.evaluate((value) => {
+    localStorage.setItem('gymbuddie:data:v2', JSON.stringify(value))
+    // A recent backup keeps the reminder out of these scenarios.
+    localStorage.setItem('gymbuddie:meta:last-export', new Date().toISOString())
+  }, data)
+  await page.reload()
+}
+
+for (const colorScheme of ['light', 'dark'] as const) {
+  test(`training features pass axe in ${colorScheme} mode`, async ({ browser }) => {
+    const context = await browser.newContext({ colorScheme, reducedMotion: 'reduce' })
+    const page = await context.newPage()
+    await seedTraining(page)
+    expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(
+      colorScheme === 'dark',
+    )
+
+    await page.locator('#exercise-toggle-bench').click()
+    await expect(page.getByText(/Letztes Mal/)).toBeVisible()
+    await page.getByRole('button', { name: /^Wiederholen: 60 kg × 8/ }).click()
+    await page.getByRole('button', { name: /Gewicht um 2,5 kg erhöhen/ }).click()
+    await page.getByRole('button', { name: /Gewicht um 2,5 kg erhöhen/ }).click()
+    await page.getByRole('button', { name: 'Satz speichern' }).click()
+
+    await expect(page.getByText(/Neuer Rekord: 65 kg × 8/)).toBeVisible()
+    await expect(page.getByRole('timer')).toBeVisible()
+    await page.locator('#chart-toggle-bench').click()
+    await expect(page.locator('figure svg')).toBeVisible()
+
+    const results = await analyzeAccessibility(page)
+    expect(results.violations).toEqual([])
+    await context.close()
+  })
+}
+
+test('runs the rest timer after a set and stops it on request', async ({ page }) => {
+  await seedTraining(page)
+  await page.locator('#exercise-toggle-dips').click()
+  await page.locator('#weight-dips').fill('0')
+  await page.locator('#reps-dips').fill('12')
+  await page.getByRole('button', { name: 'Satz speichern' }).click()
+
+  const timer = page.getByRole('timer')
+  await expect(timer).toHaveText('1:30')
+  await page.getByRole('button', { name: 'Pause um 30 Sekunden verlängern' }).click()
+  await expect(timer).toHaveText(/^(2:00|1:59)$/)
+  await page.getByRole('button', { name: 'Stopp' }).click()
+  await expect(page.getByRole('timer')).toHaveCount(0)
+})
+
+test('reorders categories by keyboard and keeps the order after a reload', async ({ page }) => {
+  await seedTraining(page)
+  await page.locator('#reorder-toggle').click()
+  await page.getByRole('button', { name: 'Kategorie Pull nach oben' }).focus()
+  await page.keyboard.press('Enter')
+  expect(await focusedElement(page)).toBe('move-category-up-pull')
+  await page.getByRole('button', { name: 'Übung Dips nach oben' }).click()
+  await page.locator('#reorder-toggle').click()
+
+  await page.reload()
+  await expect(page.getByRole('heading', { level: 3 })).toHaveText(['Pull', 'Push'])
+  await expect(page.locator('[id^="exercise-toggle-"]')).toContainText([
+    'Rudern',
+    'Dips',
+    'Bankdrücken',
+  ])
+})
+
+test('applies the chosen theme before the app loads and remembers open cards', async ({ page }) => {
+  await seedTraining(page)
+  await page.getByLabel('Dunkel').check()
+  await page.locator('#exercise-toggle-bench').click()
+
+  await page.reload()
+  // Set by the inline script in index.html, before Vue mounts.
+  expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true)
+  await expect(page.locator('#exercise-toggle-bench')).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('#exercise-toggle-dips')).toHaveAttribute('aria-expanded', 'false')
+})

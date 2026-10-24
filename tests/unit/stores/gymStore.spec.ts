@@ -517,6 +517,68 @@ describe('gym store', () => {
     })
   })
 
+  describe('order', () => {
+    function seedOrdered() {
+      seedStorage([
+        {
+          id: 'push',
+          name: 'Push',
+          exercises: [
+            { id: 'bench', name: 'Bankdrücken', history: [] },
+            { id: 'dips', name: 'Dips', history: [] },
+          ],
+        },
+        { id: 'pull', name: 'Pull', exercises: [] },
+      ])
+      return useGymStore()
+    }
+
+    it('adds new categories at the top and new exercises at the end of their category', () => {
+      const store = seedOrdered()
+      store.addCategory('Beine')
+      const result = store.addExercise('push', 'Schulterdrücken')
+
+      expect(store.categories.map((category) => category.name)).toEqual(['Beine', 'Push', 'Pull'])
+      expect(store.categories[1]?.exercises.map((exercise) => exercise.name)).toEqual([
+        'Bankdrücken',
+        'Dips',
+        'Schulterdrücken',
+      ])
+      expect(result).toMatchObject({ ok: true, id: store.categories[1]?.exercises[2]?.id })
+    })
+
+    it('moves categories and exercises and saves the new order', () => {
+      const store = seedOrdered()
+
+      expect(store.moveCategory('pull', -1).ok).toBe(true)
+      expect(store.moveExercise('push', 'bench', 1).ok).toBe(true)
+
+      expect(storedCategories().map((category) => category.id)).toEqual(['pull', 'push'])
+      expect(storedCategories()[1]?.exercises.map((exercise) => exercise.id)).toEqual([
+        'dips',
+        'bench',
+      ])
+    })
+
+    it('refuses moves past the edges and rolls back a move that cannot be saved', () => {
+      const store = seedOrdered()
+      expect(store.moveCategory('push', -1).ok).toBe(false)
+      expect(store.moveExercise('push', 'dips', 1).ok).toBe(false)
+      expect(store.moveExercise('missing', 'dips', -1).ok).toBe(false)
+
+      failWritesTo(GYM_STORAGE_KEY)
+      expect(store.moveCategory('pull', -1).ok).toBe(false)
+      expect(store.categories.map((category) => category.id)).toEqual(['push', 'pull'])
+    })
+
+    it('exposes when the stored data last changed', () => {
+      const store = seedOrdered()
+      expect(store.dataUpdatedAt).toBe('2026-07-12T10:00:00.000Z')
+      store.addCategory('Beine')
+      expect(store.dataUpdatedAt).toBe(new Date(2026, 6, 13, 18, 30).toISOString())
+    })
+  })
+
   describe('import and export', () => {
     it('exports a compact versioned backup and remembers when it was exported', () => {
       seedStorage()

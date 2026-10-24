@@ -2,7 +2,13 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRegisterSW } from 'virtual:pwa-register/vue'
 
+import { useRestTimerStore } from '@/stores/restTimerStore'
+
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+
+// Sits above the rest timer bar instead of covering it.
+const restTimer = useRestTimerStore()
+const restTimerVisible = computed(() => restTimer.running || restTimer.finishedAt !== null)
 
 const registrationError = ref('')
 let serviceWorkerRegistration: ServiceWorkerRegistration | undefined
@@ -69,7 +75,8 @@ onBeforeUnmount(() => {
 <template>
   <!-- The live region stays in the DOM so its messages are announced when they appear. -->
   <div
-    class="pointer-events-none fixed inset-x-4 bottom-4 z-50 mx-auto max-w-lg"
+    :class="restTimerVisible ? 'bottom-28' : 'bottom-4'"
+    class="pointer-events-none fixed inset-x-4 z-50 mx-auto max-w-lg"
     role="status"
     aria-live="polite"
     aria-atomic="true"

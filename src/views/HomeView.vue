@@ -1,28 +1,33 @@
 <script setup lang="ts">
+import BackupReminder from '@/components/BackupReminder.vue'
 import DataManagement from '@/components/DataManagement.vue'
 import ExerciseCard from '@/components/ExerciseCard.vue'
+import ReorderList from '@/components/ReorderList.vue'
+import SettingsPanel from '@/components/SettingsPanel.vue'
 import StorageNotice from '@/components/StorageNotice.vue'
 import { CHEVRON_ICON_PATH, PENCIL_ICON_PATH, TRASH_ICON_PATH } from '@/components/icons'
 import { focusById } from '@/composables/focus'
 import { useToday } from '@/composables/useToday'
 import { useTransientMessage } from '@/composables/useTransientMessage'
 import { MAX_NAME_LENGTH, normalizeVideoUrl, useGymStore } from '@/stores/gymStore'
-import { computed, reactive, ref } from 'vue'
+import { useUiStore } from '@/stores/uiStore'
+import { computed, reactive, ref, watch } from 'vue'
 
 const gymStore = useGymStore()
+const uiStore = useUiStore()
 const today = useToday()
+const reorderMode = ref(false)
 
 const inputClass =
-  'mt-1 min-h-11 w-full min-w-0 rounded-lg border border-gray-500 bg-white px-3 text-base placeholder:text-gray-500 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200 aria-invalid:border-red-700'
+  'mt-1 min-h-11 w-full min-w-0 rounded-lg border border-line-strong bg-surface px-3 text-base placeholder:text-fg-placeholder focus:border-focus focus:outline-none focus:ring-2 focus:ring-accent-ring aria-invalid:border-danger-fg'
 const secondaryButtonClass =
-  'min-h-11 rounded-lg border border-gray-500 bg-white px-4 font-semibold text-gray-800 transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600'
+  'min-h-11 rounded-lg border border-line-strong bg-surface px-4 font-semibold text-fg transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus'
 const headerIconButtonClass =
-  'inline-flex min-h-14 min-w-12 shrink-0 items-center justify-center text-gray-600 transition-colors focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px]'
+  'inline-flex min-h-14 min-w-12 shrink-0 items-center justify-center text-fg-subtle transition-colors focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px]'
 
 const newCategoryName = ref('')
 const categoryError = ref('')
 const { message: pageStatus, show: showPageStatus, clear: clearPageStatus } = useTransientMessage()
-const collapsedCategories = ref<string[]>([])
 
 // Only one exercise form is open at a time, so a single draft is enough.
 const exerciseFormCategoryId = ref<string | null>(null)
@@ -55,14 +60,31 @@ function describedBy(...ids: (string | false)[]) {
   return value || undefined
 }
 
-function isCategoryCollapsed(categoryId: string) {
-  return collapsedCategories.value.includes(categoryId)
-}
+const isCategoryCollapsed = uiStore.isCategoryCollapsed
+const toggleCategory = uiStore.toggleCategory
 
-function toggleCategory(categoryId: string) {
-  collapsedCategories.value = isCategoryCollapsed(categoryId)
-    ? collapsedCategories.value.filter((id) => id !== categoryId)
-    : [...collapsedCategories.value, categoryId]
+// Forget view state of deleted categories and exercises.
+watch(
+  () =>
+    gymStore.categories.map(
+      (category) => `${category.id}:${category.exercises.map((exercise) => exercise.id).join(',')}`,
+    ),
+  () => {
+    const categoryIds = new Set(gymStore.categories.map((category) => category.id))
+    const exerciseIds = new Set(
+      gymStore.categories.flatMap((category) => category.exercises.map((exercise) => exercise.id)),
+    )
+    uiStore.prune(categoryIds, exerciseIds)
+  },
+  { immediate: true },
+)
+
+function toggleReorderMode() {
+  reorderMode.value = !reorderMode.value
+  // Drop half-finished inline forms; they are hidden while reordering.
+  exerciseFormCategoryId.value = null
+  renamingCategoryId.value = null
+  confirmCategoryDeleteId.value = null
 }
 
 function handleAddCategory() {
@@ -193,6 +215,8 @@ function handleAddExercise(categoryId: string) {
     exerciseFormErrors.form = result.error
     return
   }
+  // A new exercise opens right away, ready for its first set.
+  if (result.id) uiStore.setExerciseOpen(result.id, true)
 
   showPageStatus(`Übung „${name}“ hinzugefügt.`)
   closeExerciseForm(categoryId)
@@ -200,26 +224,27 @@ function handleAddExercise(categoryId: string) {
 </script>
 
 <template>
-  <main class="min-h-screen bg-gray-50 font-sans text-gray-900">
+  <main class="min-h-screen bg-page font-sans text-fg">
     <div class="mx-auto w-full max-w-4xl px-3 pt-5 pb-32 sm:px-6 sm:pt-7">
       <header class="mb-7">
-        <h1 class="break-words text-4xl font-bold tracking-tight text-gray-950">GymBuddie</h1>
-        <p v-if="totalSetsToday > 0" class="mt-1 text-gray-700">
+        <h1 class="break-words text-4xl font-bold tracking-tight text-fg">GymBuddie</h1>
+        <p v-if="totalSetsToday > 0" class="mt-1 text-fg-muted">
           Stark! Du hast heute schon
-          <strong class="font-bold text-blue-700">{{ totalSetsToday }}</strong>
+          <strong class="font-bold text-accent-fg">{{ totalSetsToday }}</strong>
           {{ totalSetsToday === 1 ? 'Satz' : 'Sätze' }} absolviert.
         </p>
-        <p v-else class="mt-1 text-gray-700">Zeit, ins Training zu starten!</p>
+        <p v-else class="mt-1 text-fg-muted">Zeit, ins Training zu starten!</p>
       </header>
 
       <StorageNotice />
+      <BackupReminder :today="today" />
 
       <section aria-labelledby="new-category-heading" class="mb-8">
-        <h2 id="new-category-heading" class="mb-2 text-lg font-bold text-gray-900">
+        <h2 id="new-category-heading" class="mb-2 text-lg font-bold text-fg">
           Trainingskategorie hinzufügen
         </h2>
         <form novalidate @submit.prevent="handleAddCategory">
-          <label for="new-category" class="text-sm font-medium text-gray-700">Name</label>
+          <label for="new-category" class="text-sm font-medium text-fg-muted">Name</label>
           <div class="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-stretch gap-2">
             <input
               id="new-category"
@@ -229,13 +254,13 @@ function handleAddExercise(categoryId: string) {
               required
               :maxlength="MAX_NAME_LENGTH"
               placeholder="z. B. Push oder Pull"
-              class="min-h-11 w-full min-w-0 rounded-xl border border-gray-500 bg-white px-3 text-base transition-shadow placeholder:text-gray-500 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-200 aria-invalid:border-red-700"
+              class="min-h-11 w-full min-w-0 rounded-xl border border-line-strong bg-surface px-3 text-base transition-shadow placeholder:text-fg-placeholder focus:border-focus focus:outline-none focus:ring-2 focus:ring-accent-ring aria-invalid:border-danger-fg"
               :aria-invalid="Boolean(categoryError)"
               :aria-describedby="categoryError ? 'category-error' : undefined"
             />
             <button
               type="submit"
-              class="min-h-11 shrink-0 rounded-xl bg-blue-600 px-3 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 sm:px-4"
+              class="min-h-11 shrink-0 rounded-xl bg-blue-600 px-3 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:px-4"
             >
               Hinzufügen
             </button>
@@ -243,7 +268,7 @@ function handleAddExercise(categoryId: string) {
           <p
             v-if="categoryError"
             id="category-error"
-            class="mt-2 text-sm text-red-700"
+            class="mt-2 text-sm text-danger-fg"
             role="alert"
           >
             {{ categoryError }}
@@ -254,13 +279,26 @@ function handleAddExercise(categoryId: string) {
       <p class="sr-only" aria-live="polite">{{ pageStatus }}</p>
 
       <section aria-labelledby="training-heading">
-        <h2 id="training-heading" class="mb-3 text-2xl font-bold text-gray-950">Dein Training</h2>
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 id="training-heading" class="text-2xl font-bold text-fg">Dein Training</h2>
+          <button
+            v-if="gymStore.categories.length > 1 || gymStore.categories[0]?.exercises.length"
+            id="reorder-toggle"
+            type="button"
+            class="min-h-11 rounded-lg border border-line-strong bg-surface px-3 text-sm font-semibold text-fg hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            @click="toggleReorderMode"
+          >
+            {{ reorderMode ? 'Fertig' : 'Reihenfolge ändern' }}
+          </button>
+        </div>
+
+        <ReorderList v-if="reorderMode && gymStore.categories.length > 0" />
 
         <div
-          v-if="gymStore.categories.length === 0"
-          class="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-600 shadow-sm sm:p-10"
+          v-else-if="gymStore.categories.length === 0"
+          class="rounded-xl border border-line bg-surface p-8 text-center text-fg-subtle shadow-sm sm:p-10"
         >
-          <p class="font-semibold text-gray-900">Noch keine Trainingskategorien</p>
+          <p class="font-semibold text-fg">Noch keine Trainingskategorien</p>
           <p class="mt-1">Füge oben deine erste Kategorie hinzu, um loszulegen.</p>
           <p class="mt-1">Oder importiere unten unter „Daten sichern“ ein vorhandenes Backup.</p>
         </div>
@@ -269,18 +307,18 @@ function handleAddExercise(categoryId: string) {
           <section
             v-for="category in gymStore.categories"
             :key="category.id"
-            class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
+            class="overflow-hidden rounded-xl border border-line bg-surface shadow-sm"
             :aria-labelledby="`category-${category.id}`"
           >
             <div class="flex min-w-0 items-stretch">
               <h3
                 :id="`category-${category.id}`"
-                class="flex min-w-0 flex-1 text-xl font-bold text-gray-900"
+                class="flex min-w-0 flex-1 text-xl font-bold text-fg"
               >
                 <button
                   :id="`category-toggle-${category.id}`"
                   type="button"
-                  class="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 pl-4 pr-2 text-left transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600"
+                  class="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 pl-4 pr-2 text-left transition-colors hover:bg-surface-hover focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
                   :aria-expanded="!isCategoryCollapsed(category.id)"
                   :aria-controls="`category-content-${category.id}`"
                   @click="toggleCategory(category.id)"
@@ -288,7 +326,7 @@ function handleAddExercise(categoryId: string) {
                   <span class="min-w-0 break-words">{{ category.name }}</span>
                   <svg
                     aria-hidden="true"
-                    class="h-6 w-6 shrink-0 text-gray-500 transition-transform duration-200"
+                    class="h-6 w-6 shrink-0 text-fg-subtle transition-transform duration-200"
                     :class="{ 'rotate-180': !isCategoryCollapsed(category.id) }"
                     fill="none"
                     viewBox="0 0 24 24"
@@ -308,7 +346,7 @@ function handleAddExercise(categoryId: string) {
                 type="button"
                 :class="[
                   headerIconButtonClass,
-                  'hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-blue-600',
+                  'hover:bg-info hover:text-accent-fg focus-visible:outline-focus',
                 ]"
                 :aria-label="`Kategorie ${category.name} umbenennen`"
                 :aria-expanded="renamingCategoryId === category.id"
@@ -339,7 +377,7 @@ function handleAddExercise(categoryId: string) {
                 type="button"
                 :class="[
                   headerIconButtonClass,
-                  'hover:bg-red-50 hover:text-red-700 focus-visible:outline-red-600',
+                  'hover:bg-danger-tint hover:text-danger-fg focus-visible:outline-focus-danger',
                 ]"
                 :aria-label="`Kategorie ${category.name} löschen`"
                 :aria-expanded="confirmCategoryDeleteId === category.id"
@@ -366,12 +404,12 @@ function handleAddExercise(categoryId: string) {
             <form
               v-if="renamingCategoryId === category.id"
               :id="`rename-category-${category.id}`"
-              class="border-t border-blue-100 bg-blue-50 p-4"
+              class="border-t border-info-line bg-info p-4"
               novalidate
               @submit.prevent="handleRename(category.id)"
               @keydown.esc="closeRename(category.id)"
             >
-              <label class="block text-sm font-medium text-gray-700">
+              <label class="block text-sm font-medium text-fg-muted">
                 Neuer Name der Kategorie
                 <input
                   :id="`rename-category-input-${category.id}`"
@@ -390,7 +428,7 @@ function handleAddExercise(categoryId: string) {
               <p
                 v-if="renameError"
                 :id="`rename-category-error-${category.id}`"
-                class="mt-2 text-sm text-red-700"
+                class="mt-2 text-sm text-danger-fg"
                 role="alert"
               >
                 {{ renameError }}
@@ -398,7 +436,7 @@ function handleAddExercise(categoryId: string) {
               <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
                 <button
                   type="submit"
-                  class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                  class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 >
                   Namen speichern
                 </button>
@@ -415,7 +453,7 @@ function handleAddExercise(categoryId: string) {
             <div
               v-if="confirmCategoryDeleteId === category.id"
               :id="`delete-category-${category.id}`"
-              class="border-t border-red-200 bg-red-50 p-4 text-sm text-red-950"
+              class="border-t border-danger-line bg-danger-tint p-4 text-sm text-danger-strong"
               role="group"
               :aria-label="`Löschen der Kategorie ${category.name} bestätigen`"
             >
@@ -424,13 +462,13 @@ function handleAddExercise(categoryId: string) {
                 {{ category.exercises.length === 1 ? 'Übung' : 'Übungen' }} und der gesamten
                 Historie wirklich löschen?
               </p>
-              <p v-if="categoryDeleteError" class="mt-2 text-red-800" role="alert">
+              <p v-if="categoryDeleteError" class="mt-2 text-danger-strong" role="alert">
                 {{ categoryDeleteError }}
               </p>
               <div class="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  class="min-h-11 rounded-lg bg-red-700 px-4 font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+                  class="min-h-11 rounded-lg bg-red-700 px-4 font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-danger"
                   @click="handleDeleteCategory(category.id, category.name)"
                 >
                   Endgültig löschen
@@ -454,7 +492,7 @@ function handleAddExercise(categoryId: string) {
               >
                 <p
                   v-if="category.exercises.length === 0 && exerciseFormCategoryId !== category.id"
-                  class="border-t border-gray-100 py-5 text-sm text-gray-600"
+                  class="border-t border-line-subtle py-5 text-sm text-fg-subtle"
                 >
                   In dieser Kategorie gibt es noch keine Übungen.
                 </p>
@@ -465,16 +503,17 @@ function handleAddExercise(categoryId: string) {
                     :key="exercise.id"
                     :category-id="category.id"
                     :exercise="exercise"
+                    :today="today"
                     @deleted="(name) => handleExerciseDeleted(category.id, name)"
                   />
                 </div>
 
-                <div class="mt-3 border-t border-gray-100 pt-3">
+                <div class="mt-3 border-t border-line-subtle pt-3">
                   <button
                     v-if="exerciseFormCategoryId !== category.id"
                     :id="`add-exercise-btn-${category.id}`"
                     type="button"
-                    class="min-h-11 w-full rounded-lg px-3 text-left font-semibold text-blue-700 transition-colors hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                    class="min-h-11 w-full rounded-lg px-3 text-left font-semibold text-accent-fg transition-colors hover:bg-info focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                     @click="openExerciseForm(category.id)"
                   >
                     + Übung hinzufügen
@@ -482,17 +521,17 @@ function handleAddExercise(categoryId: string) {
 
                   <form
                     v-else
-                    class="rounded-lg bg-blue-50 p-3"
+                    class="rounded-lg bg-info p-3"
                     novalidate
                     @submit.prevent="handleAddExercise(category.id)"
                     @keydown.esc="closeExerciseForm(category.id)"
                   >
                     <fieldset class="min-w-0">
-                      <legend class="font-semibold break-words text-gray-900">
+                      <legend class="font-semibold break-words text-fg">
                         Neue Übung in {{ category.name }}
                       </legend>
                       <div class="mt-2 space-y-3">
-                        <label class="block text-sm font-medium text-gray-700">
+                        <label class="block text-sm font-medium text-fg-muted">
                           Name der Übung
                           <input
                             :id="`new-exercise-name-${category.id}`"
@@ -514,13 +553,13 @@ function handleAddExercise(categoryId: string) {
                         <p
                           v-if="exerciseFormErrors.name"
                           :id="`new-exercise-name-error-${category.id}`"
-                          class="text-sm text-red-700"
+                          class="text-sm text-danger-fg"
                         >
                           {{ exerciseFormErrors.name }}
                         </p>
-                        <label class="block text-sm font-medium text-gray-700">
+                        <label class="block text-sm font-medium text-fg-muted">
                           Anleitung als Link
-                          <span class="font-normal text-gray-600">(optional)</span>
+                          <span class="font-normal text-fg-subtle">(optional)</span>
                           <input
                             :id="`new-exercise-url-${category.id}`"
                             v-model="exerciseForm.videoUrl"
@@ -542,7 +581,7 @@ function handleAddExercise(categoryId: string) {
                         <p
                           v-if="exerciseFormErrors.videoUrl"
                           :id="`new-exercise-url-error-${category.id}`"
-                          class="text-sm text-red-700"
+                          class="text-sm text-danger-fg"
                         >
                           {{ exerciseFormErrors.videoUrl }}
                         </p>
@@ -551,7 +590,7 @@ function handleAddExercise(categoryId: string) {
 
                     <p
                       v-if="exerciseFormErrors.form"
-                      class="mt-2 text-sm text-red-700"
+                      class="mt-2 text-sm text-danger-fg"
                       role="alert"
                     >
                       {{ exerciseFormErrors.form }}
@@ -560,7 +599,7 @@ function handleAddExercise(categoryId: string) {
                     <div class="mt-3 flex flex-col gap-2 min-[360px]:flex-row">
                       <button
                         type="submit"
-                        class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                        class="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                       >
                         Übung speichern
                       </button>
@@ -580,6 +619,7 @@ function handleAddExercise(categoryId: string) {
         </div>
       </section>
 
+      <SettingsPanel />
       <DataManagement />
     </div>
   </main>

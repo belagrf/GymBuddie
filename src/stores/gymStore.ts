@@ -57,7 +57,8 @@ export type PersistenceStatus = 'ready' | 'saved' | 'synced' | 'error'
  */
 export type WriteBlockReason = 'unpreserved-data' | 'newer-version'
 
-export type ActionResult = { ok: true } | { ok: false; error: string }
+/** `id` is set by actions that create an entry. */
+export type ActionResult = { ok: true; id?: string } | { ok: false; error: string }
 
 /** `not-needed` means there was no previous data on this device to keep. */
 export type SnapshotState = 'saved' | 'not-needed' | 'failed'
@@ -366,6 +367,11 @@ function loadInitialData(): InitialData {
   }
 }
 
+function updatedAtOf(raw: string | null): string | null {
+  const match = raw ? /^\{"app":"GymBuddie","version":\d+,"updatedAt":"([^"]+)"/.exec(raw) : null
+  return match?.[1] && !Number.isNaN(Date.parse(match[1])) ? match[1] : null
+}
+
 type WriteResult = { ok: true } | { ok: false; error: string; external?: string | null }
 
 export const useGymStore = defineStore('gym', () => {
@@ -385,10 +391,13 @@ export const useGymStore = defineStore('gym', () => {
   // The exact string this tab last read or wrote; anything else in storage came from another tab.
   let knownRaw = initial.knownRaw
   const storedSize = ref(knownRaw?.length ?? 0)
+  // When the stored data last changed, read from the envelope (serializeGymData writes it first).
+  const dataUpdatedAt = ref<string | null>(updatedAtOf(knownRaw))
 
   function setKnownRaw(raw: string | null) {
     knownRaw = raw
     storedSize.value = raw?.length ?? 0
+    dataUpdatedAt.value = updatedAtOf(raw)
   }
   let persistenceRequested = false
 
@@ -675,11 +684,39 @@ export const useGymStore = defineStore('gym', () => {
       ...(normalizedVideoUrl ? { videoUrl: normalizedVideoUrl } : {}),
       history: [],
     }
-    category.exercises.unshift(exercise)
-    return commit(() => {
+    // New exercises join the end of the category, right above the form that created them.
+    category.exercises.push(exercise)
+    const result = commit(() => {
       const index = category.exercises.findIndex((candidate) => candidate.id === exercise.id)
       if (index >= 0) category.exercises.splice(index, 1)
     })
+    return result.ok ? { ok: true, id: exercise.id } : result
+  }
+
+  function moveWithin<T extends { id: string }>(list: T[], id: string, offset: number) {
+    const from = list.findIndex((item) => item.id === id)
+    const to = from + offset
+    if (from < 0) return fail(NOT_FOUND)
+    if (to < 0 || to >= list.length) return fail('Der Eintrag ist bereits am Rand der Liste.')
+
+    const [item] = list.splice(from, 1)
+    if (item) list.splice(to, 0, item)
+    return commit(() => {
+      const [moved] = list.splice(to, 1)
+      if (moved) list.splice(from, 0, moved)
+    })
+  }
+
+  /** Moves a category up (-1) or down (+1). */
+  function moveCategory(categoryId: string, offset: -1 | 1): ActionResult {
+    return moveWithin(categories.value, categoryId, offset)
+  }
+
+  /** Moves an exercise up (-1) or down (+1) within its category. */
+  function moveExercise(categoryId: string, exerciseId: string, offset: -1 | 1): ActionResult {
+    const category = findCategory(categoryId)
+    if (!category) return fail(NOT_FOUND)
+    return moveWithin(category.exercises, exerciseId, offset)
   }
 
   function updateExercise(
@@ -945,13 +982,16 @@ export const useGymStore = defineStore('gym', () => {
     lastExportAt,
     storagePersisted,
     storedSize,
+    dataUpdatedAt,
     clearPersistenceError,
     addCategory,
     renameCategory,
     deleteCategory,
+    moveCategory,
     addExercise,
     updateExercise,
     deleteExercise,
+    moveExercise,
     logSet,
     updateSet,
     deleteSet,
